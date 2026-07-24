@@ -42,8 +42,13 @@ fi
 
 echo "==> Creating venv + installing deps"
 cd "$REPO"
-if [ ! -d ".venv" ]; then
-    /opt/homebrew/bin/python3.13 -m venv .venv
+# Find a working Python 3.x from homebrew (avoids venvs pinning to a
+# specific minor version that brew later upgrades away).
+PY="$(command -v /opt/homebrew/bin/python3 || command -v python3)"
+if [ ! -d ".venv" ] || ! "./.venv/bin/python" --version >/dev/null 2>&1; then
+    echo "   (Re)creating venv with $PY"
+    rm -rf .venv
+    "$PY" -m venv .venv
 fi
 ./.venv/bin/pip install --quiet --upgrade pip
 ./.venv/bin/pip install --quiet -r requirements.txt
