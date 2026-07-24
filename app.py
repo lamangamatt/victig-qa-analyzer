@@ -638,15 +638,42 @@ def page_paste():
     if not parsed:
         return
 
-    # Confidence + notes
+    # Confidence + explanation + notes
     conf = parsed.get("confidence", "medium")
-    conf_cls = {"high": "confidence-high",
-                "medium": "confidence-medium",
-                "low": "confidence-low"}[conf]
+    conf_reason = parsed.get("confidence_reason", "").strip()
+    conf_meta = {
+        "high": ("confidence-high", "🟢",
+                 "All required fields cleanly present in source. No "
+                 "ambiguous enum mappings, no missing key dates."),
+        "medium": ("confidence-medium", "🟡",
+                   "Most fields present, but at least one required "
+                   "inference (offense-level mapped from language, a key "
+                   "date reconstructed, or record-holder identity assumed "
+                   "to match the candidate). Review the highlighted fields."),
+        "low": ("confidence-low", "🔴",
+                "Multiple critical fields missing or ambiguous. Heavy "
+                "operator review needed — this paste is likely incomplete."),
+    }
+    conf_cls, conf_icon, conf_rubric = conf_meta.get(conf, conf_meta["medium"])
     st.markdown(
-        f"**Parse confidence:** <span class='{conf_cls}'>{conf.upper()}</span>",
+        f"**Parse confidence:** <span class='{conf_cls}'>{conf_icon} "
+        f"{conf.upper()}</span>",
         unsafe_allow_html=True,
+        help=(
+            "How confident the parser was that it extracted the paste "
+            "correctly:\n\n"
+            "🟢 **HIGH** — all fields cleanly present, no inferences.\n\n"
+            "🟡 **MEDIUM** — some fields inferred or reconstructed. "
+            "Review carefully.\n\n"
+            "🔴 **LOW** — critical fields missing/ambiguous. Consider "
+            "re-pasting with more detail."
+        ),
     )
+    if conf_reason:
+        st.caption(f"**Why {conf.upper()}:** {conf_reason}")
+    else:
+        st.caption(f"_{conf_rubric}_")
+
     notes = parsed.get("notes") or []
     if notes:
         st.info("📝 Parser notes:\n\n" + "\n".join(f"- {n}" for n in notes))

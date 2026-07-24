@@ -98,7 +98,8 @@ Output STRICT JSON matching this schema (no prose, no markdown):
     "sex_offenses_only": boolean
   } | null,
   "notes": [string],                    // ambiguities, missing fields, warnings
-  "confidence": "high" | "medium" | "low"
+  "confidence": "high" | "medium" | "low",
+  "confidence_reason": string           // 1-2 sentences explaining WHY
 }
 
 RULES:
@@ -131,7 +132,30 @@ RULES:
 - Add every unclear/missing-but-needed field to "notes".
 - If no candidate info at all, still return the JSON with best guesses
   in "notes".
-- confidence="high" only if all required fields are cleanly extractable.
+
+CONFIDENCE RUBRIC:
+- "high": ALL required fields are clearly present in the source text
+  with no ambiguity. Offense level, disposition, jurisdiction, all key
+  dates, and identity fields all cleanly extractable. No enum mapping
+  guesswork required.
+- "medium": Most fields present, but at least one of:
+    (a) An offense level or disposition was INFERRED from ambiguous
+        language (e.g., only a charge description, no explicit F/M);
+    (b) A key date is missing (disposition date, arrest date, etc.)
+        but was reconstructable from context;
+    (c) Record-holder identity fields (record_first_name/last_name)
+        were assumed to match the candidate because not separately listed;
+    (d) Any state-specific special handling (marijuana, amended felony,
+        etc.) was best-guessed.
+- "low": Multiple critical fields missing or highly ambiguous:
+    disposition is "no_disposition" or "unknown", offense_level is
+    "unknown", jurisdiction is missing, or key dates absent AND
+    unrecoverable. This paste needs heavy operator review.
+
+Always populate "confidence_reason" with a 1-2 sentence explanation
+calling out the SPECIFIC fields that drove the rating (e.g. "Offense
+  level inferred from 'Theft F3' as felony; disposition_date reconstructed
+  from sentencing paragraph.")
 
 Return ONLY the JSON object. No preamble, no explanation.
 """
@@ -267,6 +291,7 @@ def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
 
     parsed.setdefault("notes", [])
     parsed.setdefault("confidence", "medium")
+    parsed.setdefault("confidence_reason", "")
     parsed.setdefault("client", None)
     return parsed
 
