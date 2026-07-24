@@ -1,0 +1,35 @@
+{
+  "subject": {
+    "first_name": "Alex",
+    "last_name": "Chen",
+    "dob": "1995-07-04",
+    "gender": "male",
+    "name_grade": 40,
+    "annual_salary": 55000,
+    "address_history": [
+      { "state": "CA", "county": "Alameda", "from": "2015-01-01", "to": null }
+    ]
+  },
+  "records": [
+    {
+      "record_id": "REC-MJ-001",
+      "source": "County Court",
+      "source_confirmed": true,
+      "charge_description": "Marijuana possession (non-felony)",
+      "offense_level": "misdemeanor",
+      "disposition": "convicted",
+      "is_marijuana_possession": true,
+      "arrest_date": "2022-01-10",
+      "file_date": "2022-01-12",
+      "disposition_date": "2022-05-20",
+      "state": "CA",
+      "county": "Alameda",
+      "case_number": "MJ-2022-100",
+      "record_first_name": "Alex",
+      "record_last_name": "Chen",
+      "record_dob": "1995-07-04",
+      "record_gender": "male",
+      "record_address_state": "CA"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# Streamlit UI
+streamlit>=1.30.0
+
+# Core engine has zero external dependencies (pure stdlib).

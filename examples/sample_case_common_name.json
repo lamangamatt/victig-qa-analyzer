@@ -1,0 +1,34 @@
+{
+  "subject": {
+    "first_name": "Michael",
+    "last_name": "Smith",
+    "middle_name": "James",
+    "dob": "1990-01-15",
+    "gender": "male",
+    "name_grade": 78,
+    "address_history": [
+      { "state": "UT", "county": "Salt Lake", "from": "2015-01-01", "to": null }
+    ]
+  },
+  "records": [
+    {
+      "record_id": "REC-COMMON-001",
+      "source": "County Court",
+      "source_confirmed": true,
+      "charge_description": "DUI",
+      "offense_level": "misdemeanor",
+      "disposition": "convicted",
+      "arrest_date": "2022-09-01",
+      "file_date": "2022-09-02",
+      "disposition_date": "2023-01-15",
+      "state": "TX",
+      "county": "Harris",
+      "case_number": "TX-2022-9999",
+      "record_first_name": "Michael",
+      "record_last_name": "Smith",
+      "record_dob": "1990-01-15",
+      "record_gender": "male",
+      "record_address_state": "TX"
+    }
+  ]
+}

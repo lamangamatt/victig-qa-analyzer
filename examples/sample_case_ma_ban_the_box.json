@@ -1,0 +1,33 @@
+{
+  "subject": {
+    "first_name": "Sarah",
+    "last_name": "O'Brien",
+    "dob": "1982-04-18",
+    "gender": "female",
+    "name_grade": 35,
+    "address_history": [
+      { "state": "MA", "county": "Suffolk", "from": "2010-01-01", "to": null }
+    ]
+  },
+  "records": [
+    {
+      "record_id": "REC-MA-MISD-001",
+      "source": "County Court",
+      "source_confirmed": true,
+      "charge_description": "Shoplifting",
+      "offense_level": "misdemeanor",
+      "disposition": "convicted",
+      "arrest_date": "2020-02-10",
+      "file_date": "2020-02-11",
+      "disposition_date": "2020-08-15",
+      "state": "MA",
+      "county": "Suffolk",
+      "case_number": "2050CR00099",
+      "record_first_name": "Sarah",
+      "record_last_name": "O'Brien",
+      "record_dob": "1982-04-18",
+      "record_gender": "female",
+      "record_address_state": "MA"
+    }
+  ]
+}

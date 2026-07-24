@@ -1,0 +1,29 @@
+{
+  "subject": {
+    "first_name": "Bob",
+    "last_name": "Johnson",
+    "dob": "1975-11-05",
+    "gender": "male",
+    "name_grade": 40
+  },
+  "records": [
+    {
+      "record_id": "REC-PETTY-001",
+      "source": "County Court",
+      "source_confirmed": true,
+      "charge_description": "Speeding 20 over",
+      "offense_level": "traffic_infraction",
+      "disposition": "convicted",
+      "arrest_date": "2024-06-01",
+      "file_date": "2024-06-02",
+      "disposition_date": "2024-06-15",
+      "state": "UT",
+      "county": "Weber",
+      "case_number": "TR-2024-001",
+      "record_first_name": "Bob",
+      "record_last_name": "Johnson",
+      "record_dob": "1975-11-05",
+      "record_gender": "male"
+    }
+  ]
+}

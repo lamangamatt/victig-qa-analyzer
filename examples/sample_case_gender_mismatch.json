@@ -1,0 +1,28 @@
+{
+  "subject": {
+    "first_name": "Taylor",
+    "last_name": "Morgan",
+    "dob": "1992-05-20",
+    "gender": "female",
+    "name_grade": 42
+  },
+  "records": [
+    {
+      "record_id": "REC-GENDER-001",
+      "source": "County Court",
+      "source_confirmed": true,
+      "charge_description": "Assault",
+      "offense_level": "felony",
+      "disposition": "convicted",
+      "arrest_date": "2021-06-01",
+      "disposition_date": "2022-01-10",
+      "state": "UT",
+      "county": "Utah",
+      "case_number": "UT-2021-111",
+      "record_first_name": "Taylor",
+      "record_last_name": "Morgan",
+      "record_dob": "1992-05-20",
+      "record_gender": "male"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "subject": {
+    "first_name": "John",
+    "last_name": "Smith",
+    "middle_name": "Robert",
+    "dob": "1985-06-15",
+    "ssn_last4": "1234",
+    "gender": "male",
+    "race": "White",
+    "address_history": [
+      { "state": "UT", "county": "Salt Lake", "from": "2015-01-01", "to": null },
+      { "state": "CA", "county": "Los Angeles", "from": "2018-01-01", "to": "2022-06-01" }
+    ],
+    "annual_salary": 60000,
+    "name_grade": 45
+  },
+  "records": [
+    {
+      "record_id": "REC-001",
+      "source": "County Court",
+      "source_confirmed": true,
+      "charge_description": "Grand Theft",
+      "offense_level": "felony",
+      "disposition": "convicted",
+      "arrest_date": "2020-05-10",
+      "file_date": "2020-05-15",
+      "disposition_date": "2020-11-20",
+      "state": "UT",
+      "county": "Salt Lake",
+      "court_name": "3rd District Court",
+      "case_number": "201234567",
+      "record_first_name": "John",
+      "record_last_name": "Smith",
+      "record_middle_name": "Robert",
+      "record_dob": "1985-06-15",
+      "record_gender": "male",
+      "record_address_state": "UT"
+    }
+  ]
+}

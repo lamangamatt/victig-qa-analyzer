@@ -1,0 +1,27 @@
+{
+  "subject": {
+    "first_name": "Carlos",
+    "last_name": "Ruiz",
+    "dob": "1988-09-12",
+    "gender": "male",
+    "name_grade": 50
+  },
+  "records": [
+    {
+      "record_id": "REC-MISS-DISP-001",
+      "source": "NetPlus",
+      "source_confirmed": false,
+      "charge_description": "Burglary 2nd Degree",
+      "offense_level": "felony",
+      "disposition": "no_disposition",
+      "arrest_date": "2022-08-15",
+      "file_date": "2022-08-16",
+      "state": "AZ",
+      "county": "Maricopa",
+      "case_number": "CR2022-9999",
+      "record_first_name": "Carlos",
+      "record_last_name": "Ruiz",
+      "record_dob": "1988-09-12"
+    }
+  ]
+}

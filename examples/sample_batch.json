@@ -1,0 +1,170 @@
+[
+  {
+    "expected": "REPORT",
+    "notes": "Clean UT felony conviction, 5+ years old",
+    "subject": {
+      "first_name": "John",
+      "last_name": "Smith",
+      "middle_name": "Robert",
+      "dob": "1985-06-15",
+      "gender": "male",
+      "name_grade": 45,
+      "address_history": [{ "state": "UT", "county": "Salt Lake", "from": "2015-01-01", "to": null }]
+    },
+    "records": [
+      {
+        "record_id": "REC-CLEAN-FELONY",
+        "source": "County Court", "source_confirmed": true,
+        "charge_description": "Grand Theft",
+        "offense_level": "felony", "disposition": "convicted",
+        "arrest_date": "2020-05-10", "disposition_date": "2020-11-20",
+        "state": "UT", "county": "Salt Lake", "case_number": "201234567",
+        "record_first_name": "John", "record_last_name": "Smith",
+        "record_middle_name": "Robert", "record_dob": "1985-06-15",
+        "record_gender": "male", "record_address_state": "UT"
+      }
+    ]
+  },
+  {
+    "expected": "EXCLUDE",
+    "notes": "Dismissed misdemeanor",
+    "subject": { "first_name": "Jane", "last_name": "Doe", "dob": "1990-03-22", "gender": "female", "name_grade": 30 },
+    "records": [{
+      "record_id": "REC-DISM", "source": "County Court", "source_confirmed": true,
+      "charge_description": "Petit Theft", "offense_level": "misdemeanor",
+      "disposition": "dismissed", "arrest_date": "2023-01-10", "disposition_date": "2023-04-20",
+      "state": "UT", "case_number": "231000001",
+      "record_first_name": "Jane", "record_last_name": "Doe",
+      "record_dob": "1990-03-22", "record_gender": "female"
+    }]
+  },
+  {
+    "expected": "EXCLUDE",
+    "notes": "Traffic infraction (not a reportable offense level)",
+    "subject": { "first_name": "Bob", "last_name": "Johnson", "dob": "1975-11-05", "gender": "male", "name_grade": 40 },
+    "records": [{
+      "record_id": "REC-TRAFFIC", "source": "County Court", "source_confirmed": true,
+      "charge_description": "Speeding 20 over", "offense_level": "traffic_infraction",
+      "disposition": "convicted", "state": "UT", "case_number": "TR-2024-001",
+      "record_first_name": "Bob", "record_last_name": "Johnson",
+      "record_dob": "1975-11-05", "record_gender": "male"
+    }]
+  },
+  {
+    "expected": "ESCALATE",
+    "notes": "No disposition — assume conviction & follow up",
+    "subject": { "first_name": "Carlos", "last_name": "Ruiz", "dob": "1988-09-12", "gender": "male", "name_grade": 50 },
+    "records": [{
+      "record_id": "REC-NO-DISP", "source": "NetPlus", "source_confirmed": false,
+      "charge_description": "Burglary 2nd Degree", "offense_level": "felony",
+      "disposition": "no_disposition", "arrest_date": "2022-08-15",
+      "state": "AZ", "case_number": "CR2022-9999",
+      "record_first_name": "Carlos", "record_last_name": "Ruiz", "record_dob": "1988-09-12"
+    }]
+  },
+  {
+    "expected": "EXCLUDE",
+    "notes": "CA non-felony marijuana older than 2 years",
+    "subject": { "first_name": "Alex", "last_name": "Chen", "dob": "1995-07-04", "gender": "male", "name_grade": 40, "annual_salary": 55000 },
+    "records": [{
+      "record_id": "REC-CA-MJ", "source": "County Court", "source_confirmed": true,
+      "charge_description": "Marijuana possession", "offense_level": "misdemeanor",
+      "disposition": "convicted", "is_marijuana_possession": true,
+      "arrest_date": "2022-01-10", "disposition_date": "2022-05-20",
+      "state": "CA", "case_number": "MJ-2022-100",
+      "record_first_name": "Alex", "record_last_name": "Chen",
+      "record_dob": "1995-07-04", "record_gender": "male", "record_address_state": "CA"
+    }]
+  },
+  {
+    "expected": "EXCLUDE",
+    "notes": "MA misdemeanor > 3 yrs (Ban The Box)",
+    "subject": { "first_name": "Sarah", "last_name": "OBrien", "dob": "1982-04-18", "gender": "female", "name_grade": 35 },
+    "records": [{
+      "record_id": "REC-MA-BTB", "source": "County Court", "source_confirmed": true,
+      "charge_description": "Shoplifting", "offense_level": "misdemeanor",
+      "disposition": "convicted", "arrest_date": "2020-02-10", "disposition_date": "2020-08-15",
+      "state": "MA", "case_number": "2050CR00099",
+      "record_first_name": "Sarah", "record_last_name": "OBrien",
+      "record_dob": "1982-04-18", "record_gender": "female"
+    }]
+  },
+  {
+    "expected": "REPORT",
+    "notes": "NY pending charge, high-salary subject",
+    "subject": { "first_name": "Michael", "last_name": "Anderson", "dob": "1980-12-30", "gender": "male", "name_grade": 55, "annual_salary": 80000 },
+    "records": [{
+      "record_id": "REC-NY-PEND", "source": "County Court", "source_confirmed": true,
+      "charge_description": "Assault 3rd Degree", "offense_level": "misdemeanor",
+      "disposition": "pending", "arrest_date": "2024-11-15",
+      "state": "NY", "case_number": "2024NY123456",
+      "record_first_name": "Michael", "record_last_name": "Anderson",
+      "record_dob": "1980-12-30", "record_gender": "male"
+    }]
+  },
+  {
+    "expected": "ESCALATE",
+    "notes": "Common name (NameGrade 78) — needs supervisor review",
+    "subject": { "first_name": "Michael", "last_name": "Smith", "middle_name": "James", "dob": "1990-01-15", "gender": "male", "name_grade": 78 },
+    "records": [{
+      "record_id": "REC-COMMON", "source": "County Court", "source_confirmed": true,
+      "charge_description": "DUI", "offense_level": "misdemeanor",
+      "disposition": "convicted", "arrest_date": "2022-09-01", "disposition_date": "2023-01-15",
+      "state": "TX", "case_number": "TX-2022-9999",
+      "record_first_name": "Michael", "record_last_name": "Smith",
+      "record_dob": "1990-01-15", "record_gender": "male", "record_address_state": "TX"
+    }]
+  },
+  {
+    "expected": "EXCLUDE",
+    "notes": "Gender mismatch (Level 2 disqualifier)",
+    "subject": { "first_name": "Taylor", "last_name": "Morgan", "dob": "1992-05-20", "gender": "female", "name_grade": 42 },
+    "records": [{
+      "record_id": "REC-GENDER", "source": "County Court", "source_confirmed": true,
+      "charge_description": "Assault", "offense_level": "felony",
+      "disposition": "convicted", "disposition_date": "2022-01-10", "arrest_date": "2021-06-01",
+      "state": "UT", "case_number": "UT-2021-111",
+      "record_first_name": "Taylor", "record_last_name": "Morgan",
+      "record_dob": "1992-05-20", "record_gender": "male"
+    }]
+  },
+  {
+    "expected": "EXCLUDE",
+    "notes": "AK non-conviction (state prohibits)",
+    "subject": { "first_name": "Diana", "last_name": "Prince", "dob": "1985-01-01", "gender": "female", "name_grade": 30 },
+    "records": [{
+      "record_id": "REC-AK-PEND", "source": "State Court", "source_confirmed": true,
+      "charge_description": "Theft", "offense_level": "misdemeanor",
+      "disposition": "pending", "arrest_date": "2024-01-01",
+      "state": "AK", "case_number": "AK-2024-1",
+      "record_first_name": "Diana", "record_last_name": "Prince",
+      "record_dob": "1985-01-01", "record_gender": "female"
+    }]
+  },
+  {
+    "expected": "REPORT",
+    "notes": "HI misdemeanor within 5-yr disposition window",
+    "subject": { "first_name": "Kai", "last_name": "Nakamura", "dob": "1993-06-06", "gender": "male", "name_grade": 30 },
+    "records": [{
+      "record_id": "REC-HI", "source": "County Court", "source_confirmed": true,
+      "charge_description": "Petty theft", "offense_level": "misdemeanor",
+      "disposition": "convicted", "arrest_date": "2022-01-15", "disposition_date": "2022-06-20",
+      "state": "HI", "case_number": "HI-2022-500",
+      "record_first_name": "Kai", "record_last_name": "Nakamura",
+      "record_dob": "1993-06-06", "record_gender": "male"
+    }]
+  },
+  {
+    "expected": "ESCALATE",
+    "notes": "Source not confirmed (NetPlus only)",
+    "subject": { "first_name": "Rachel", "last_name": "Green", "dob": "1987-09-09", "gender": "female", "name_grade": 50 },
+    "records": [{
+      "record_id": "REC-NETPLUS", "source": "NetPlus", "source_confirmed": false,
+      "charge_description": "Theft", "offense_level": "misdemeanor",
+      "disposition": "convicted", "arrest_date": "2020-01-01", "disposition_date": "2020-05-01",
+      "state": "UT", "case_number": "UT-2020-99",
+      "record_first_name": "Rachel", "record_last_name": "Green",
+      "record_dob": "1987-09-09", "record_gender": "female"
+    }]
+  }
+]

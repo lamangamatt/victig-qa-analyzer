@@ -1,0 +1,29 @@
+{
+  "subject": {
+    "first_name": "Jane",
+    "last_name": "Doe",
+    "dob": "1990-03-22",
+    "gender": "female",
+    "name_grade": 30
+  },
+  "records": [
+    {
+      "record_id": "REC-DISM-001",
+      "source": "County Court",
+      "source_confirmed": true,
+      "charge_description": "Petit Theft",
+      "offense_level": "misdemeanor",
+      "disposition": "dismissed",
+      "arrest_date": "2023-01-10",
+      "file_date": "2023-01-12",
+      "disposition_date": "2023-04-20",
+      "state": "UT",
+      "county": "Utah",
+      "case_number": "231000001",
+      "record_first_name": "Jane",
+      "record_last_name": "Doe",
+      "record_dob": "1990-03-22",
+      "record_gender": "female"
+    }
+  ]
+}
