@@ -184,15 +184,34 @@ def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
 
     client = anthropic.Anthropic()
 
+    # Use tool_use to force valid, complete JSON output. This eliminates
+    # the truncation risk that comes with free-form JSON generation.
+    tool = {
+        "name": "emit_parsed_case",
+        "description": "Emit the parsed candidate + records data.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "object"},
+                "records": {"type": "array", "items": {"type": "object"}},
+                "client": {"type": ["object", "null"]},
+                "notes": {"type": "array", "items": {"type": "string"}},
+                "confidence": {"type": "string",
+                               "enum": ["high", "medium", "low"]},
+            },
+            "required": ["subject", "records"],
+        },
+    }
+
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=16384,
             temperature=0,
             system=SCHEMA_PROMPT,
-            messages=[
-                {"role": "user", "content": text}
-            ],
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "emit_parsed_case"},
+            messages=[{"role": "user", "content": text}],
         )
     except Exception as e:
         raise ParserError(f"LLM call failed: {type(e).__name__}: {e}") from e
@@ -200,25 +219,44 @@ def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
     if not response.content:
         raise ParserError("LLM returned empty response.")
 
-    raw = response.content[0].text.strip()
+    # Find the tool_use block in the response
+    tool_use_block = None
+    for block in response.content:
+        if getattr(block, "type", None) == "tool_use":
+            tool_use_block = block
+            break
 
-    # Strip markdown code fences if the model added any
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        # remove first fence line
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        # remove trailing fence
-        if lines and lines[-1].strip().startswith("```"):
-            lines = lines[:-1]
-        raw = "\n".join(lines).strip()
+    if tool_use_block is None:
+        # Fallback: try free-form text parsing (older-model behavior)
+        raw = response.content[0].text.strip() if hasattr(response.content[0], "text") else ""
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            raw = "\n".join(lines).strip()
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            hint = (
+                " (response may be truncated; try splitting into smaller pastes)"
+                if len(raw) > 10000
+                else ""
+            )
+            raise ParserError(
+                f"LLM returned non-JSON output{hint}. First 400 chars:\n"
+                f"{raw[:400]}\n\nError: {e}"
+            )
+    else:
+        # tool_use returns parsed dict directly — no JSON decode step needed
+        parsed = tool_use_block.input
 
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as e:
+    # Check for truncation via stop_reason
+    if getattr(response, "stop_reason", None) == "max_tokens":
         raise ParserError(
-            f"LLM returned non-JSON output. First 400 chars:\n{raw[:400]}\n\n"
-            f"Error: {e}"
+            "Response was truncated (hit max_tokens). Try splitting your "
+            "paste into fewer records at a time."
         )
 
     # Basic schema sanity
