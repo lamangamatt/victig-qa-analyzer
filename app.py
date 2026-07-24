@@ -652,7 +652,7 @@ def page_paste():
         with st.expander(
             f"Record {i+1}: {rd.get('charge_description', '(no charge)')}  "
             f"[{rd.get('state', '?')}]",
-            expanded=True,
+            expanded=False,
         ):
             rec = parser.dict_to_record(rd)
             rec = edit_record_widget(rec, i)
@@ -666,7 +666,7 @@ def page_paste():
     if st.button("⚖️ Analyze all records", type="primary", use_container_width=True):
         st.markdown("### Results")
 
-        # Summary counts
+        # Run analysis
         results = []
         counts = {"REPORT": 0, "EXCLUDE": 0, "ESCALATE": 0}
         for rec in records:
@@ -674,34 +674,64 @@ def page_paste():
             results.append((rec, d))
             counts[d.outcome.value] += 1
 
+        # Summary counters
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(
-                f"<div class='summary-metric'>"
-                f"<h2 style='color:#198754;margin:0'>{counts['REPORT']}</h2>"
-                f"<div>REPORT</div></div>",
-                unsafe_allow_html=True,
-            )
-        with c2:
             st.markdown(
                 f"<div class='summary-metric'>"
                 f"<h2 style='color:#dc3545;margin:0'>{counts['EXCLUDE']}</h2>"
                 f"<div>EXCLUDE</div></div>",
                 unsafe_allow_html=True,
             )
-        with c3:
+        with c2:
             st.markdown(
                 f"<div class='summary-metric'>"
                 f"<h2 style='color:#b58900;margin:0'>{counts['ESCALATE']}</h2>"
                 f"<div>ESCALATE</div></div>",
                 unsafe_allow_html=True,
             )
+        with c3:
+            st.markdown(
+                f"<div class='summary-metric'>"
+                f"<h2 style='color:#198754;margin:0'>{counts['REPORT']}</h2>"
+                f"<div>REPORT</div></div>",
+                unsafe_allow_html=True,
+            )
         st.write("")
 
-        # Per-record details
-        for rec, d in results:
-            st.markdown("---")
-            render_decision(d, rec, subject)
+        # Group by outcome in order: EXCLUDE, ESCALATE, REPORT
+        outcome_order = [
+            DecisionOutcome.EXCLUDE,
+            DecisionOutcome.ESCALATE,
+            DecisionOutcome.REPORT,
+        ]
+        outcome_meta = {
+            DecisionOutcome.EXCLUDE: ("❌", "EXCLUDE", "#dc3545"),
+            DecisionOutcome.ESCALATE: ("⚠️", "ESCALATE", "#b58900"),
+            DecisionOutcome.REPORT: ("✅", "REPORT", "#198754"),
+        }
+
+        for outcome in outcome_order:
+            group = [(rec, d) for rec, d in results if d.outcome == outcome]
+            if not group:
+                continue
+
+            icon, label, color = outcome_meta[outcome]
+            st.markdown(
+                f"<h4 style='color:{color};margin-top:20px;margin-bottom:8px'>"
+                f"{icon} {label} · {len(group)}</h4>",
+                unsafe_allow_html=True,
+            )
+
+            for rec, d in group:
+                # Compact expander title so the outcome is scannable
+                charge = rec.charge_description or "(no charge)"
+                title = (
+                    f"{icon} {label}  ·  {rec.record_id or 'record'}  ·  "
+                    f"{charge} [{rec.state or '?'}]"
+                )
+                with st.expander(title, expanded=False):
+                    render_decision(d, rec, subject)
 
         # Downloadable JSON audit trail
         st.markdown("---")
