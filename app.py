@@ -545,6 +545,22 @@ def edit_record_widget(rec: CriminalRecord, idx: int) -> CriminalRecord:
 def _init_state():
     st.session_state.setdefault("parsed", None)
     st.session_state.setdefault("parse_error", None)
+    st.session_state.setdefault("paste_text", "")
+
+
+def _load_sample_cb():
+    """Callback: populate paste_text with the sample. Runs before the
+    text_area widget is instantiated on the next rerun."""
+    st.session_state["paste_text"] = SAMPLE_PASTE
+    st.session_state["parsed"] = None
+    st.session_state["parse_error"] = None
+
+
+def _reset_cb():
+    """Callback: clear everything."""
+    st.session_state["paste_text"] = ""
+    st.session_state["parsed"] = None
+    st.session_state["parse_error"] = None
 
 
 def page_paste():
@@ -573,18 +589,20 @@ def page_paste():
 
     c1, c2, c3 = st.columns([1, 1, 3])
     with c1:
-        parse_btn = st.button("🔎 Parse", type="primary", use_container_width=True,
-                              disabled=not parser.is_available())
+        parse_btn = st.button(
+            "🔎 Parse", type="primary", use_container_width=True,
+            disabled=not parser.is_available(),
+        )
     with c2:
-        if st.button("📋 Load sample", use_container_width=True):
-            st.session_state["paste_text"] = SAMPLE_PASTE
-            st.rerun()
+        st.button(
+            "📋 Load sample", use_container_width=True,
+            on_click=_load_sample_cb,
+        )
     with c3:
-        if st.button("♻️ Reset", use_container_width=True):
-            st.session_state["parsed"] = None
-            st.session_state["parse_error"] = None
-            st.session_state["paste_text"] = ""
-            st.rerun()
+        st.button(
+            "♻️ Reset", use_container_width=True,
+            on_click=_reset_cb,
+        )
 
     if parse_btn:
         st.session_state["parsed"] = None
