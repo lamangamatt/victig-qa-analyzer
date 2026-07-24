@@ -1,0 +1,26 @@
+# Streamlit server config for behind-reverse-proxy hosting via
+# Tailscale Funnel at https://matts-mac-mini.tailefa08d.ts.net/qa-analyzer/
+
+[server]
+# Path-prefix that this app is served under. Must match the Funnel route
+# and Streamlit's base URL config.
+baseUrlPath = "qa-analyzer"
+
+# Run headless on the local port; Funnel handles the public HTTPS.
+port = 8890
+headless = true
+address = "127.0.0.1"
+
+# We're behind a trusted reverse proxy on localhost \u2014 disable CORS +
+# XSRF checks that would otherwise reject same-origin proxied requests.
+enableCORS = false
+enableXsrfProtection = false
+
+# Small file uploads only (audit trail JSON); avoids memory spikes.
+maxUploadSize = 5
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+primaryColor = "#0d6efd"

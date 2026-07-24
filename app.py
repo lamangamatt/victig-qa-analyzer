@@ -11,7 +11,9 @@ Local: streamlit run app.py
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -45,6 +47,55 @@ st.set_page_config(
     page_icon="⚖️",
     layout="wide",
 )
+
+
+# ---------------------------------------------------------------------------
+# Access control (token gate)
+# ---------------------------------------------------------------------------
+
+def _require_token():
+    """Gate the app behind a shared token when QA_ANALYZER_TOKEN is set.
+
+    Accepts either:
+      - ?token=XXX in the URL (same pattern as OpenClaw chat), OR
+      - Manually entered token on the login screen (stored in session)
+
+    When QA_ANALYZER_TOKEN is not set (dev/local), the app is open.
+    """
+    expected = os.environ.get("QA_ANALYZER_TOKEN", "").strip()
+    if not expected:
+        return  # dev mode — no auth required
+
+    # Already authenticated in this session?
+    if st.session_state.get("_auth_ok"):
+        return
+
+    # Check URL query param first (?token=...)
+    try:
+        qp = st.query_params.get("token", "")
+    except Exception:
+        qp = ""
+    if qp and hmac.compare_digest(qp.strip(), expected):
+        st.session_state["_auth_ok"] = True
+        return
+
+    # Otherwise show login screen
+    st.title("⚖️ VICTIG QA Analyzer")
+    st.markdown(
+        "This tool is restricted to authorized VICTIG staff. "
+        "Enter the access token to continue."
+    )
+    tok = st.text_input("Access token", type="password", key="_token_input")
+    if st.button("Unlock", type="primary"):
+        if hmac.compare_digest(tok.strip(), expected):
+            st.session_state["_auth_ok"] = True
+            st.rerun()
+        else:
+            st.error("Invalid token.")
+    st.stop()
+
+
+_require_token()
 
 st.markdown(
     """

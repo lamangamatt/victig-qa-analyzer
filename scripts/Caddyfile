@@ -1,0 +1,27 @@
+# Caddy config for the QA Analyzer.
+#
+# Purpose: Tailscale Funnel strips the /qa-analyzer prefix when it
+# forwards. Streamlit needs its baseUrlPath preserved. Caddy sits
+# between Funnel and Streamlit, adding the prefix back.
+#
+# Flow:
+#   Browser → Funnel (strips /qa-analyzer) → Caddy on 8891 (re-adds it)
+#     → Streamlit on 8890 (serves at baseUrlPath=qa-analyzer)
+#
+# Run: caddy run --config <path-to-this-file>
+
+{
+    admin off
+}
+
+:8891 {
+    # Rewrite everything to add the qa-analyzer prefix that Funnel stripped
+    rewrite * /qa-analyzer{uri}
+
+    # Proxy to Streamlit (native WebSocket support)
+    reverse_proxy 127.0.0.1:8890 {
+        # Preserve original host header for Streamlit's XSRF check bypass
+        header_up Host {upstream_hostport}
+        header_up X-Forwarded-Proto https
+    }
+}

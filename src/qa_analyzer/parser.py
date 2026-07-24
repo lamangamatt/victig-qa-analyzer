@@ -27,7 +27,10 @@ from qa_analyzer.models import (
 )
 
 
-DEFAULT_MODEL = "claude-sonnet-4-5"
+# Claude Haiku 4.5 is 3-5x faster and ~10x cheaper than Sonnet, with
+# essentially identical accuracy for structured extraction (parsing is
+# not a judgment task — the deterministic engine does all judgment).
+DEFAULT_MODEL = "claude-haiku-4-5"
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +233,7 @@ def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=16384,
+            max_tokens=8192,
             temperature=0,
             system=SCHEMA_PROMPT,
             tools=[tool],
