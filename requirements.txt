@@ -1,4 +1,7 @@
 # Streamlit UI
 streamlit>=1.30.0
 
-# Core engine has zero external dependencies (pure stdlib).
+# LLM parser (paste → structured data)
+anthropic>=0.30.0
+
+# Core engine itself has zero external dependencies (pure stdlib).

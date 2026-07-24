@@ -1,10 +1,12 @@
 """VICTIG QA Analyzer — Streamlit UI
 
-Team-facing tool for reviewing criminal records against Kate's SOP
-(FCRA + state law + client restrictions + matching policy).
+Primary flow: operator pastes candidate + criminal record data,
+LLM parser extracts structured data, operator reviews/edits,
+deterministic engine returns REPORT / EXCLUDE / ESCALATE per record.
 
 Deploy: push to GitHub, connect to share.streamlit.io.
-Local:  streamlit run app.py
+Set ANTHROPIC_API_KEY in Streamlit Secrets to enable paste parser.
+Local: streamlit run app.py
 """
 
 from __future__ import annotations
@@ -14,12 +16,12 @@ import sys
 from datetime import date
 from pathlib import Path
 
-# Make the src/qa_analyzer package importable when running from repo root
 _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT / "src"))
 
 import streamlit as st  # noqa: E402
 
+from qa_analyzer import parser  # noqa: E402
 from qa_analyzer.decision import analyze_record  # noqa: E402
 from qa_analyzer.models import (  # noqa: E402
     ClientProfile,
@@ -52,30 +54,27 @@ st.markdown(
             background-color: #198754;
             padding: 18px 24px;
             border-radius: 8px;
-            font-size: 2rem;
+            font-size: 1.5rem;
             font-weight: 700;
             text-align: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
         }
         .outcome-exclude {
             color: #ffffff;
             background-color: #dc3545;
             padding: 18px 24px;
             border-radius: 8px;
-            font-size: 2rem;
+            font-size: 1.5rem;
             font-weight: 700;
             text-align: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
         }
         .outcome-escalate {
             color: #212529;
             background-color: #ffc107;
             padding: 18px 24px;
             border-radius: 8px;
-            font-size: 2rem;
+            font-size: 1.5rem;
             font-weight: 700;
             text-align: center;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
         }
         .rule-pass {
             background-color: #d1e7dd;
@@ -105,12 +104,6 @@ st.markdown(
             font-style: italic;
             margin-top: 4px;
         }
-        .stat-box {
-            background-color: #f8f9fa;
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin: 6px 0;
-        }
         .footer-note {
             color: #6c757d;
             font-size: 0.85rem;
@@ -118,6 +111,15 @@ st.markdown(
             padding-top: 12px;
             border-top: 1px solid #dee2e6;
         }
+        .summary-metric {
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+        .confidence-high { color: #198754; font-weight: 600; }
+        .confidence-medium { color: #b58900; font-weight: 600; }
+        .confidence-low { color: #dc3545; font-weight: 600; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -125,40 +127,39 @@ st.markdown(
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Enum label maps for select widgets
 # ---------------------------------------------------------------------------
 
-# Enum options for select boxes
 OFFENSE_LEVEL_LABELS = {
     OffenseLevel.FELONY: "Felony",
     OffenseLevel.MISDEMEANOR: "Misdemeanor",
     OffenseLevel.PETTY_MISDEMEANOR: "Petty Misdemeanor (MN)",
     OffenseLevel.MINOR_MISDEMEANOR: "Minor Misdemeanor (OH)",
     OffenseLevel.TRAFFIC_INFRACTION: "Traffic Infraction",
-    OffenseLevel.ORDINANCE: "Ordinance (noise/dogs/etc.)",
+    OffenseLevel.ORDINANCE: "Ordinance",
     OffenseLevel.FORFEITURE_U: "Forfeiture U (WI)",
     OffenseLevel.SUMMARY_OFFENSE: "Summary Offense (PA)",
-    OffenseLevel.PETTY_DISORDERLY: "Petty Disorderly Persons (NJ)",
+    OffenseLevel.PETTY_DISORDERLY: "Petty Disorderly (NJ)",
     OffenseLevel.UNKNOWN: "Unknown",
 }
 
 DISPOSITION_LABELS = {
     Disposition.CONVICTED: "Convicted",
     Disposition.GUILTY: "Guilty",
-    Disposition.NOLO_CONTENDERE: "Nolo Contendere (No Contest)",
+    Disposition.NOLO_CONTENDERE: "Nolo Contendere",
     Disposition.PENDING: "Pending",
     Disposition.DEFERRED: "Deferred (active)",
     Disposition.DIVERSION: "Diversion (active)",
-    Disposition.FIRST_OFFENDER: "First Offender Program (active)",
+    Disposition.FIRST_OFFENDER: "First Offender (active)",
     Disposition.DISMISSED: "Dismissed",
     Disposition.ACQUITTED: "Acquitted",
     Disposition.NOT_GUILTY: "Not Guilty",
     Disposition.ADJUDICATION_WITHHELD: "Adjudication Withheld",
-    Disposition.DEFERRED_COMPLETED: "Deferred (successfully completed)",
+    Disposition.DEFERRED_COMPLETED: "Deferred (completed)",
     Disposition.EXPUNGED: "Expunged",
     Disposition.SEALED: "Sealed",
-    Disposition.JUVENILE: "Juvenile-court adjudication",
-    Disposition.ARREST_ONLY: "Arrest-only (no charges filed)",
+    Disposition.JUVENILE: "Juvenile",
+    Disposition.ARREST_ONLY: "Arrest-only",
     Disposition.NO_DISPOSITION: "No disposition available",
     Disposition.UNKNOWN: "Unknown",
 }
@@ -179,17 +180,52 @@ US_STATES = [
 ]
 
 
-def render_outcome(outcome: DecisionOutcome):
+# ---------------------------------------------------------------------------
+# Sample paste (in the sidebar as a copy-paste starter)
+# ---------------------------------------------------------------------------
+
+SAMPLE_PASTE = """CANDIDATE:
+Name: John Robert Smith
+DOB: 06/15/1985
+SSN: XXX-XX-1234
+Gender: Male
+Address: 123 Main St, Salt Lake City, UT 84101 (2015-present)
+Prior: Los Angeles, CA (2018-2022)
+Annual Salary: $60,000
+NameGrade: 45
+
+CRIMINAL RECORD:
+Source: Salt Lake County Court (verified)
+Case Number: 201234567
+Charge: Grand Theft (Felony)
+Court: 3rd District Court, Salt Lake County, UT
+Arrest Date: 05/10/2020
+Filed: 05/15/2020
+Disposition: Convicted
+Disposition Date: 11/20/2020
+Defendant Name: John R Smith
+Defendant DOB: 06/15/1985
+Gender: M
+"""
+
+
+# ---------------------------------------------------------------------------
+# Rendering helpers
+# ---------------------------------------------------------------------------
+
+
+def render_outcome(outcome: DecisionOutcome, record_id: str = ""):
     cls = {
         DecisionOutcome.REPORT: "outcome-report",
         DecisionOutcome.EXCLUDE: "outcome-exclude",
         DecisionOutcome.ESCALATE: "outcome-escalate",
     }[outcome]
-    label = {
-        DecisionOutcome.REPORT: "✅ REPORT — All SOP tests passed",
-        DecisionOutcome.EXCLUDE: "❌ EXCLUDE — Record cannot be reported",
-        DecisionOutcome.ESCALATE: "⚠️ ESCALATE — Human review required",
+    icon = {
+        DecisionOutcome.REPORT: "✅ REPORT",
+        DecisionOutcome.EXCLUDE: "❌ EXCLUDE",
+        DecisionOutcome.ESCALATE: "⚠️ ESCALATE",
     }[outcome]
+    label = f"{icon}  ·  {record_id}" if record_id else icon
     st.markdown(f"<div class='{cls}'>{label}</div>", unsafe_allow_html=True)
 
 
@@ -203,7 +239,7 @@ def render_rule_result(r):
     st.markdown(
         f"""
         <div class='{cls}'>
-            <strong>{mark} [{r.test_id}] {r.test_name}</strong>
+            <strong>{mark} {r.test_name}</strong>
             <div class='rule-detail'>{r.detail}</div>
             <div class='sop-ref'>→ {r.sop_reference}</div>
         </div>
@@ -213,11 +249,9 @@ def render_rule_result(r):
 
 
 def render_decision(decision: Decision, record: CriminalRecord, subject: Subject):
-    st.markdown("### Outcome")
-    render_outcome(decision.outcome)
+    render_outcome(decision.outcome, record.record_id or "record")
     st.write("")
 
-    # Two-column summary of the record
     col_a, col_b, col_c = st.columns(3)
     with col_a:
         st.markdown("**Subject**")
@@ -244,17 +278,15 @@ def render_decision(decision: Decision, record: CriminalRecord, subject: Subject
             f"{decision.controlling_date_reason}"
         )
 
-    st.markdown("### Rule results")
     for r in decision.rule_results:
         render_rule_result(r)
 
-    # Matching detail
     if decision.matching_score:
         with st.expander("Matching Policy detail (SOP §8)"):
             m = decision.matching_score
             st.markdown(
-                f"**Level 1 matches:** {m['level_one_match_count']}/4  "
-                f"**NameGrade:** {m['name_grade']} (threshold "
+                f"**Level 1 matches:** {m['level_one_match_count']}/4  ·  "
+                f"**NameGrade:** {m['name_grade']}  (threshold "
                 f"{m['namegrade_threshold']}; common name = {m['common_name']})"
             )
             for k, v in m["level_one_matches"].items():
@@ -266,17 +298,13 @@ def render_decision(decision: Decision, record: CriminalRecord, subject: Subject
                     + "; ".join(m["level_two_disqualifiers"])
                 )
             if m["level_three_flags"]:
-                st.warning(
-                    "Level 3 red flags: " + "; ".join(m["level_three_flags"])
-                )
+                st.warning("Level 3 red flags: " + "; ".join(m["level_three_flags"]))
 
-    # State law overlay
     if decision.state_rules_applied:
         with st.expander(f"State-law overlays for {record.state or '?'}"):
             for note in decision.state_rules_applied:
                 st.text(f"• {note}")
 
-    # Warnings and escalation
     if decision.warnings:
         for w in decision.warnings:
             st.warning(w)
@@ -287,426 +315,468 @@ def render_decision(decision: Decision, record: CriminalRecord, subject: Subject
 
 
 # ---------------------------------------------------------------------------
-# Input form
+# Preview + edit widgets (for LLM-parsed data before analysis)
 # ---------------------------------------------------------------------------
 
 
-def input_form():
-    """Render the record-entry form and return (subject, record, client)."""
+def _safe_date(v, fallback: date = None) -> date:
+    return v if isinstance(v, date) else (fallback or date.today())
 
-    with st.form("record_form", clear_on_submit=False):
-        st.subheader("👤 Subject (candidate being screened)")
 
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            first = st.text_input("First name*", value="John")
-        with c2:
-            middle = st.text_input("Middle name", value="Robert")
-        with c3:
-            last = st.text_input("Last name*", value="Smith")
-        with c4:
-            suffix = st.text_input("Suffix", value="", disabled=True)
-
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            dob = st.date_input(
-                "DOB*",
-                value=date(1985, 6, 15),
-                min_value=date(1920, 1, 1),
-                max_value=date.today(),
-            )
-        with c2:
-            ssn = st.text_input("SSN last 4", max_chars=4)
-        with c3:
-            gender_choice = st.selectbox(
-                "Gender",
-                options=list(GENDER_LABELS.keys()),
-                format_func=lambda g: GENDER_LABELS[g],
-                index=1,
-            )
-        with c4:
-            race = st.text_input("Race (optional)")
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            salary = st.number_input(
-                "Annual salary (for salary-cap states)",
-                min_value=0,
-                max_value=1_000_000,
-                value=60000,
-                step=5000,
-            )
-        with c2:
-            name_grade = st.number_input(
-                "NameGrade™ score (0–100)",
-                min_value=0,
-                max_value=100,
-                value=45,
-                step=1,
-                help="From VICTIG's NameGrade tool. ≥58 = common name (needs 3 IDs).",
-            )
-        with c3:
-            addr_states = st.text_input(
-                "Prior state history (comma-separated)",
-                value="UT",
-                help="e.g., UT,CA,NV — states where subject has lived",
-            )
-
-        st.subheader("📋 Criminal record")
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            source = st.text_input("Source", value="County Court")
-        with c2:
-            source_confirmed = st.checkbox(
-                "Source confirmed?",
-                value=True,
-                help="Was this confirmed with the authoritative court/source? "
-                "(SOP §2: DB-only hits must be confirmed.)",
-            )
-        with c3:
-            case_number = st.text_input("Case number", value="")
-
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            charge = st.text_input("Charge description", value="Grand Theft")
-        with c2:
-            offense_level = st.selectbox(
-                "Offense level*",
-                options=list(OFFENSE_LEVEL_LABELS.keys()),
-                format_func=lambda l: OFFENSE_LEVEL_LABELS[l],
-                index=0,
-            )
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            state = st.selectbox("State*", options=US_STATES, index=US_STATES.index("UT"))
-        with c2:
-            county = st.text_input("County", value="Salt Lake")
-        with c3:
-            disposition = st.selectbox(
-                "Disposition*",
-                options=list(DISPOSITION_LABELS.keys()),
-                format_func=lambda d: DISPOSITION_LABELS[d],
-                index=0,
-            )
-
-        st.markdown("**Dates**  *(fill in what's available)*")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            arrest_date = st.date_input(
-                "Arrest date",
-                value=None,
-                min_value=date(1970, 1, 1),
-                max_value=date.today(),
-            )
-        with c2:
-            file_date = st.date_input(
-                "Court file date",
-                value=None,
-                min_value=date(1970, 1, 1),
-                max_value=date.today(),
-            )
-        with c3:
-            disposition_date = st.date_input(
-                "Disposition date",
-                value=date(2020, 11, 20),
-                min_value=date(1970, 1, 1),
-                max_value=date.today(),
-            )
-        with c4:
-            release_date = st.date_input(
-                "Release date",
-                value=None,
-                min_value=date(1970, 1, 1),
-                max_value=date.today(),
-            )
-
-        c1, c2 = st.columns(2)
-        with c1:
-            parole_date = st.date_input(
-                "Parole start date",
-                value=None,
-                min_value=date(1970, 1, 1),
-                max_value=date.today(),
-            )
-        with c2:
-            sentence_max = st.date_input(
-                "Max sentence date (if no release date)",
-                value=None,
-                min_value=date(1970, 1, 1),
-                max_value=date.today(),
-            )
-
-        st.markdown("**Record-holder identifiers** *(from the court record)*")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            r_first = st.text_input("First (on record)", value="John")
-        with c2:
-            r_middle = st.text_input("Middle (on record)", value="Robert")
-        with c3:
-            r_last = st.text_input("Last (on record)", value="Smith")
-        with c4:
-            r_dob = st.date_input(
-                "DOB (on record)",
-                value=date(1985, 6, 15),
-                min_value=date(1920, 1, 1),
-                max_value=date.today(),
-            )
-
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            r_ssn = st.text_input("SSN last 4 (on record)", max_chars=4)
-        with c2:
-            r_gender = st.selectbox(
-                "Gender (on record)",
-                options=list(GENDER_LABELS.keys()),
-                format_func=lambda g: GENDER_LABELS[g],
-                index=1,
-                key="rec_gender",
-            )
-        with c3:
-            r_addr_state = st.selectbox(
-                "Record location state",
-                options=[""] + US_STATES,
-                index=(US_STATES.index("UT") + 1),
-            )
-
-        st.markdown("**Special flags**")
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            is_mj = st.checkbox(
-                "CA non-felony marijuana",
-                help="Triggers CA 2-year rule",
-            )
-        with c2:
-            is_amended = st.checkbox(
-                "IN felony amended to misdemeanor",
-                help="IN Class D/L6 → Class A misdemeanor rule",
-            )
-        with c3:
-            prob_viol_incarc = st.checkbox(
-                "Probation violation → incarceration",
-                help="SOP §6: active probation doesn't extend timeline, but "
-                "a probation-violation incarceration does",
-            )
-
-        st.subheader("🏢 Client restrictions (optional)")
-        c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            client_name = st.text_input("Client name", value="")
-        with c2:
-            client_max_misd = st.number_input(
-                "Misdemeanor cap (years)",
-                min_value=0,
-                max_value=30,
-                value=0,
-                help="0 = use FCRA/state default",
-            )
-        with c3:
-            client_max_fel = st.number_input(
-                "Felony cap (years)",
-                min_value=0,
-                max_value=30,
-                value=0,
-                help="0 = use FCRA/state default",
-            )
-        with c4:
-            client_felonies_only = st.checkbox("Felonies only")
-
-        submitted = st.form_submit_button(
-            "🔍 Analyze",
-            type="primary",
-            use_container_width=True,
+def edit_subject_widget(subject: Subject, key_prefix: str = "s") -> Subject:
+    """Compact editor for the parsed Subject; returns updated Subject."""
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        first = st.text_input("First name*", value=subject.first_name, key=f"{key_prefix}_first")
+    with c2:
+        middle = st.text_input("Middle", value=subject.middle_name or "", key=f"{key_prefix}_middle")
+    with c3:
+        last = st.text_input("Last name*", value=subject.last_name, key=f"{key_prefix}_last")
+    with c4:
+        dob = st.date_input(
+            "DOB*",
+            value=subject.dob or date(1985, 1, 1),
+            min_value=date(1920, 1, 1),
+            max_value=date.today(),
+            key=f"{key_prefix}_dob",
         )
 
-    if not submitted:
-        return None
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        ssn = st.text_input(
+            "SSN last 4", value=subject.ssn_last4 or "", max_chars=4,
+            key=f"{key_prefix}_ssn",
+        )
+    with c2:
+        gender = st.selectbox(
+            "Gender", options=list(GENDER_LABELS.keys()),
+            format_func=lambda g: GENDER_LABELS[g],
+            index=list(GENDER_LABELS.keys()).index(subject.gender)
+                if subject.gender in GENDER_LABELS else 0,
+            key=f"{key_prefix}_gender",
+        )
+    with c3:
+        salary = st.number_input(
+            "Annual salary", min_value=0, max_value=1_000_000,
+            value=int(subject.annual_salary or 0), step=5000,
+            key=f"{key_prefix}_salary",
+        )
+    with c4:
+        name_grade = st.number_input(
+            "NameGrade", min_value=0, max_value=100,
+            value=int(subject.name_grade) if subject.name_grade is not None else 50,
+            step=1, help="≥58 = common name, needs 3 identifiers",
+            key=f"{key_prefix}_ng",
+        )
 
-    # Build the models
-    addr_states_list = [
-        s.strip().upper() for s in addr_states.split(",") if s.strip()
+    # Address history — flattened to a comma list of states
+    prior_states = ",".join(
+        sorted({(a.get("state") or "").upper() for a in subject.address_history
+                if a.get("state")})
+    )
+    addr_states = st.text_input(
+        "Prior states (comma-separated)", value=prior_states,
+        help="For Level 3 locational matching",
+        key=f"{key_prefix}_addr",
+    )
+    address_history = [
+        {"state": s.strip().upper(), "county": ""}
+        for s in addr_states.split(",") if s.strip()
     ]
-    address_history = [{"state": s, "county": ""} for s in addr_states_list]
 
-    subject = Subject(
+    return Subject(
         first_name=first.strip(),
         last_name=last.strip(),
         middle_name=middle.strip() or None,
         dob=dob,
         ssn_last4=ssn.strip() or None,
-        gender=gender_choice,
-        race=race.strip() or None,
+        gender=gender,
+        race=subject.race,
         address_history=address_history,
         annual_salary=float(salary) if salary else None,
         name_grade=int(name_grade),
     )
 
-    record = CriminalRecord(
-        record_id=case_number.strip() or "REC-001",
-        source=source.strip(),
-        source_confirmed=source_confirmed,
-        charge_description=charge.strip(),
-        offense_level=offense_level,
-        disposition=disposition,
-        arrest_date=arrest_date if arrest_date else None,
-        file_date=file_date if file_date else None,
-        disposition_date=disposition_date if disposition_date else None,
-        release_date=release_date if release_date else None,
-        parole_start_date=parole_date if parole_date else None,
-        sentence_max_date=sentence_max if sentence_max else None,
-        state=state,
-        county=county.strip(),
-        case_number=case_number.strip(),
-        record_first_name=r_first.strip(),
-        record_last_name=r_last.strip(),
-        record_middle_name=r_middle.strip() or None,
-        record_dob=r_dob if r_dob else None,
-        record_ssn_last4=r_ssn.strip() or None,
-        record_gender=r_gender,
-        record_address_state=r_addr_state or None,
+
+def edit_record_widget(rec: CriminalRecord, idx: int) -> CriminalRecord:
+    """Compact editor for one parsed CriminalRecord."""
+    key = f"r{idx}"
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        case_num = st.text_input("Case number", value=rec.case_number,
+                                 key=f"{key}_case")
+    with c2:
+        source = st.text_input("Source", value=rec.source, key=f"{key}_src")
+    with c3:
+        source_confirmed = st.checkbox(
+            "Source confirmed",
+            value=rec.source_confirmed,
+            key=f"{key}_srcconf",
+            help="DB-only hits must be confirmed with court (SOP §2).",
+        )
+    with c4:
+        state_idx = US_STATES.index(rec.state) if rec.state in US_STATES else 0
+        state = st.selectbox("State*", options=US_STATES, index=state_idx,
+                             key=f"{key}_state")
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        charge = st.text_input("Charge description",
+                               value=rec.charge_description, key=f"{key}_charge")
+    with c2:
+        offense_level = st.selectbox(
+            "Offense level*",
+            options=list(OFFENSE_LEVEL_LABELS.keys()),
+            format_func=lambda l: OFFENSE_LEVEL_LABELS[l],
+            index=list(OFFENSE_LEVEL_LABELS.keys()).index(rec.offense_level)
+                if rec.offense_level in OFFENSE_LEVEL_LABELS else 0,
+            key=f"{key}_lvl",
+        )
+    with c3:
+        county = st.text_input("County", value=rec.county, key=f"{key}_county")
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        disposition = st.selectbox(
+            "Disposition*",
+            options=list(DISPOSITION_LABELS.keys()),
+            format_func=lambda d: DISPOSITION_LABELS[d],
+            index=list(DISPOSITION_LABELS.keys()).index(rec.disposition)
+                if rec.disposition in DISPOSITION_LABELS else 0,
+            key=f"{key}_disp",
+        )
+    with c2:
+        arrest_date = st.date_input(
+            "Arrest date",
+            value=rec.arrest_date, min_value=date(1970, 1, 1),
+            max_value=date.today(), key=f"{key}_arrest",
+        )
+    with c3:
+        disposition_date = st.date_input(
+            "Disposition date",
+            value=rec.disposition_date, min_value=date(1970, 1, 1),
+            max_value=date.today(), key=f"{key}_dispdate",
+        )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        release_date = st.date_input(
+            "Release date",
+            value=rec.release_date, min_value=date(1970, 1, 1),
+            max_value=date.today(), key=f"{key}_release",
+        )
+    with c2:
+        parole_date = st.date_input(
+            "Parole start",
+            value=rec.parole_start_date, min_value=date(1970, 1, 1),
+            max_value=date.today(), key=f"{key}_parole",
+        )
+    with c3:
+        sentence_max = st.date_input(
+            "Max sentence",
+            value=rec.sentence_max_date, min_value=date(1970, 1, 1),
+            max_value=date.today(), key=f"{key}_sentmax",
+        )
+
+    st.caption("Record-holder identifiers (from the charge record)")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        r_first = st.text_input("Rec first",
+                                value=rec.record_first_name, key=f"{key}_rfirst")
+    with c2:
+        r_middle = st.text_input("Rec middle",
+                                 value=rec.record_middle_name or "", key=f"{key}_rmiddle")
+    with c3:
+        r_last = st.text_input("Rec last",
+                               value=rec.record_last_name, key=f"{key}_rlast")
+    with c4:
+        r_dob = st.date_input(
+            "Rec DOB",
+            value=rec.record_dob, min_value=date(1920, 1, 1),
+            max_value=date.today(), key=f"{key}_rdob",
+        )
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        r_gender = st.selectbox(
+            "Rec gender",
+            options=list(GENDER_LABELS.keys()),
+            format_func=lambda g: GENDER_LABELS[g],
+            index=list(GENDER_LABELS.keys()).index(rec.record_gender)
+                if rec.record_gender in GENDER_LABELS else 0,
+            key=f"{key}_rgender",
+        )
+    with c2:
+        r_state_options = [""] + US_STATES
+        r_state_idx = r_state_options.index(rec.record_address_state) \
+            if rec.record_address_state in r_state_options else 0
+        r_state = st.selectbox("Rec state", options=r_state_options,
+                               index=r_state_idx, key=f"{key}_rstate")
+    with c3:
+        is_mj = st.checkbox(
+            "CA non-felony marijuana",
+            value=rec.is_marijuana_possession, key=f"{key}_mj",
+        )
+
+    return CriminalRecord(
+        record_id=case_num or rec.record_id,
+        source=source, source_confirmed=source_confirmed,
+        charge_description=charge, offense_level=offense_level,
+        disposition=disposition, arrest_date=arrest_date,
+        disposition_date=disposition_date, release_date=release_date,
+        parole_start_date=parole_date, sentence_max_date=sentence_max,
+        state=state, county=county,
+        court_name=rec.court_name, case_number=case_num,
+        record_first_name=r_first, record_last_name=r_last,
+        record_middle_name=r_middle or None,
+        record_dob=r_dob, record_gender=r_gender,
+        record_address_state=r_state or None,
         is_marijuana_possession=is_mj,
-        is_amended_from_felony=is_amended,
-        is_probation_violation_incarceration=prob_viol_incarc,
+        is_amended_from_felony=rec.is_amended_from_felony,
     )
-
-    client = None
-    if client_name.strip() or client_max_misd or client_max_fel or client_felonies_only:
-        client = ClientProfile(
-            client_id=client_name.strip().replace(" ", "_")[:32] or "custom",
-            client_name=client_name.strip(),
-            max_years_misdemeanor=client_max_misd or None,
-            max_years_felony=client_max_fel or None,
-            felonies_only=client_felonies_only,
-        )
-
-    return subject, record, client
 
 
 # ---------------------------------------------------------------------------
-# Sidebar & pages
+# Page: Paste & Analyze (default)
 # ---------------------------------------------------------------------------
 
 
-def sidebar():
-    st.sidebar.title("⚖️ QA Analyzer")
-    st.sidebar.caption("VICTIG SOP-driven reportability engine")
-
-    page = st.sidebar.radio(
-        "Navigation",
-        options=["🔍 Analyze record", "📖 About & SOP references", "📁 State rules"],
-        label_visibility="collapsed",
-    )
-    st.sidebar.divider()
-
-    with st.sidebar:
-        st.markdown("### Outcomes")
-        st.markdown(
-            """
-            - <span style='color:#198754;font-weight:600'>REPORT</span>
-              — all 4 tests pass, safe to include on report
-            - <span style='color:#dc3545;font-weight:600'>EXCLUDE</span>
-              — one or more tests definitively fail
-            - <span style='color:#ffc107;font-weight:600'>ESCALATE</span>
-              — needs human review (missing data, common name, etc.)
-            """,
-            unsafe_allow_html=True,
-        )
-        st.divider()
-        st.markdown("### The 4 SOP tests")
-        st.markdown(
-            """
-            1. **Reportable offense** (felony/misdemeanor level)
-            2. **Within scope** (FCRA + state + client year caps)
-            3. **Reportable disposition** (conviction or active pending)
-            4. **Sufficient PII** (2+ IDs, or 3+ if common name)
-            """
-        )
-        st.divider()
-        st.caption(
-            "SOP source: Kate Florez's QA Standard Operating Procedures. "
-            "Every rule cites its section for FCRA audit trails."
-        )
-
-    return page
+def _init_state():
+    st.session_state.setdefault("parsed", None)
+    st.session_state.setdefault("parse_error", None)
 
 
-def page_analyze():
-    st.title("🔍 Analyze a criminal record")
+def page_paste():
+    _init_state()
+    st.title("⚖️ VICTIG QA Analyzer")
     st.caption(
-        "Enter subject + record details. The engine runs the 4 SOP tests + "
-        "state law + matching policy and returns REPORT / EXCLUDE / ESCALATE "
-        "with a full audit trail."
+        "Paste candidate + criminal record data. The parser extracts a "
+        "structured version for you to review, then the engine runs the "
+        "4 SOP tests + state law + matching policy."
     )
 
-    result = input_form()
-    if result is None:
+    if not parser.is_available():
+        st.warning(
+            "🔑 **Parser not configured.** Add `ANTHROPIC_API_KEY` in the "
+            "Streamlit Cloud app settings → **Secrets**, then reboot the "
+            "app. In the meantime, use the **Manual entry** page in the "
+            "sidebar to run analyses."
+        )
+
+    text = st.text_area(
+        "Paste any format — plain text, JSON, court docket, system export, etc.",
+        height=280,
+        placeholder="Paste candidate + criminal record data here…",
+        key="paste_text",
+    )
+
+    c1, c2, c3 = st.columns([1, 1, 3])
+    with c1:
+        parse_btn = st.button("🔎 Parse", type="primary", use_container_width=True,
+                              disabled=not parser.is_available())
+    with c2:
+        if st.button("📋 Load sample", use_container_width=True):
+            st.session_state["paste_text"] = SAMPLE_PASTE
+            st.rerun()
+    with c3:
+        if st.button("♻️ Reset", use_container_width=True):
+            st.session_state["parsed"] = None
+            st.session_state["parse_error"] = None
+            st.session_state["paste_text"] = ""
+            st.rerun()
+
+    if parse_btn:
+        st.session_state["parsed"] = None
+        st.session_state["parse_error"] = None
+        try:
+            with st.spinner("Extracting structured data…"):
+                parsed = parser.parse(text)
+            st.session_state["parsed"] = parsed
+        except parser.ParserError as e:
+            st.session_state["parse_error"] = str(e)
+
+    if st.session_state["parse_error"]:
+        st.error(st.session_state["parse_error"])
         return
 
-    subject, record, client = result
-    decision = analyze_record(record, subject, client)
-    st.divider()
-    render_decision(decision, record, subject)
+    parsed = st.session_state["parsed"]
+    if not parsed:
+        return
 
-    # Downloadable JSON for audit / integration
-    st.divider()
-    st.download_button(
-        "⬇️ Download decision as JSON (for audit trail)",
-        data=json.dumps(decision.to_dict(), indent=2),
-        file_name=f"decision_{decision.record_id}.json",
-        mime="application/json",
-    )
-
-
-def page_about():
-    st.title("📖 About the QA Analyzer")
+    # Confidence + notes
+    conf = parsed.get("confidence", "medium")
+    conf_cls = {"high": "confidence-high",
+                "medium": "confidence-medium",
+                "low": "confidence-low"}[conf]
     st.markdown(
-        """
-        This tool automates the reportability decision that VICTIG QA
-        researchers make on every criminal record. It applies Kate
-        Florez's SOP end-to-end and produces an auditable outcome.
-
-        ### What it enforces
-
-        - **SOP §1** — Identity Verification (input requirement)
-        - **SOP §2** — NetPlus / source-confirmation requirement
-        - **SOP §5** — The four Pending Review tests (offense/scope/disposition/PII)
-        - **SOP §6** — Controlling-date calculation (latest of disposition,
-          release, parole, or max sentence)
-        - **SOP §7** — All state limitations beyond FCRA
-        - **SOP §8** — Matching Policy Levels 1/2/3
-        - **SOP §18** — Reporting Guidelines (felony/misdemeanor scope,
-          MA Ban-the-Box, salary caps)
-
-        ### Precedence when tests disagree
-
-        1. **Any hard-fail → EXCLUDE.** A definitively bad disposition
-           (dismissed, expunged) or ineligible offense (traffic infraction)
-           excludes the record regardless of identity ambiguity.
-        2. **Any escalate flag → ESCALATE.** Missing dates, missing
-           NameGrade, common-name + no locational match, unconfirmed
-           source — all send to human.
-        3. **All pass → REPORT.**
-
-        ### Design principles
-
-        - **Deterministic and auditable.** Every decision returns a
-          rule-by-rule reasoning object with SOP citations. No LLM
-          black boxes in the critical path.
-        - **Data-driven state table.** Update `state_law.py` when Kate
-          updates the SOP — no other code changes needed.
-        - **Fail safe.** Missing data escalates to human; nothing is
-          reported silently.
-
-        ### Known limitations (see `docs/DESIGN.md`)
-
-        - NameGrade is currently an input; automation to come.
-        - No connection to VICTIG's record system yet — this is
-          reviewer-facing.
-        - Missing sections in the SOP (e.g., Missed Records) not yet
-          implemented — Kate is still writing them.
-        """
+        f"**Parse confidence:** <span class='{conf_cls}'>{conf.upper()}</span>",
+        unsafe_allow_html=True,
     )
+    notes = parsed.get("notes") or []
+    if notes:
+        st.info("📝 Parser notes:\n\n" + "\n".join(f"- {n}" for n in notes))
+
+    # Review + edit
+    st.markdown("---")
+    st.subheader("👤 Candidate (review & edit)")
+    subject = parser.dict_to_subject(parsed.get("subject", {}))
+    subject = edit_subject_widget(subject)
+
+    st.subheader(f"📋 Records ({len(parsed.get('records', []))})")
+    records_raw = parsed.get("records", [])
+    if not records_raw:
+        st.warning("No records extracted. Add or paste more data and try again.")
+        return
+
+    records = []
+    for i, rd in enumerate(records_raw):
+        with st.expander(
+            f"Record {i+1}: {rd.get('charge_description', '(no charge)')}  "
+            f"[{rd.get('state', '?')}]",
+            expanded=True,
+        ):
+            rec = parser.dict_to_record(rd)
+            rec = edit_record_widget(rec, i)
+            records.append(rec)
+
+    # Client
+    client = parser.dict_to_client(parsed.get("client"))
+
+    # Analyze
+    st.markdown("---")
+    if st.button("⚖️ Analyze all records", type="primary", use_container_width=True):
+        st.markdown("### Results")
+
+        # Summary counts
+        results = []
+        counts = {"REPORT": 0, "EXCLUDE": 0, "ESCALATE": 0}
+        for rec in records:
+            d = analyze_record(rec, subject, client, other_records_on_report=records)
+            results.append((rec, d))
+            counts[d.outcome.value] += 1
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(
+                f"<div class='summary-metric'>"
+                f"<h2 style='color:#198754;margin:0'>{counts['REPORT']}</h2>"
+                f"<div>REPORT</div></div>",
+                unsafe_allow_html=True,
+            )
+        with c2:
+            st.markdown(
+                f"<div class='summary-metric'>"
+                f"<h2 style='color:#dc3545;margin:0'>{counts['EXCLUDE']}</h2>"
+                f"<div>EXCLUDE</div></div>",
+                unsafe_allow_html=True,
+            )
+        with c3:
+            st.markdown(
+                f"<div class='summary-metric'>"
+                f"<h2 style='color:#b58900;margin:0'>{counts['ESCALATE']}</h2>"
+                f"<div>ESCALATE</div></div>",
+                unsafe_allow_html=True,
+            )
+        st.write("")
+
+        # Per-record details
+        for rec, d in results:
+            st.markdown("---")
+            render_decision(d, rec, subject)
+
+        # Downloadable JSON audit trail
+        st.markdown("---")
+        audit = {
+            "subject": {
+                "name": f"{subject.first_name} {subject.last_name}",
+                "dob": subject.dob.isoformat() if subject.dob else None,
+            },
+            "decisions": [d.to_dict() for _, d in results],
+            "counts": counts,
+        }
+        st.download_button(
+            "⬇️ Download audit trail (JSON)",
+            data=json.dumps(audit, indent=2),
+            file_name=f"qa_audit_{subject.first_name}_{subject.last_name}.json",
+            mime="application/json",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Page: Manual entry (fallback when parser unavailable or user prefers it)
+# ---------------------------------------------------------------------------
+
+
+def page_manual():
+    st.title("📝 Manual entry")
+    st.caption("Fallback: fill the form directly if you'd rather not paste.")
+
+    # Reuse the widgets — one subject + one record
+    st.subheader("👤 Candidate")
+    default_subject = Subject(
+        first_name="", last_name="", dob=date(1985, 1, 1),
+        gender=None, name_grade=50, address_history=[],
+    )
+    subject = edit_subject_widget(default_subject, key_prefix="man_s")
+
+    st.subheader("📋 Record")
+    default_record = CriminalRecord(
+        record_id="", source="County Court", source_confirmed=True,
+        charge_description="", offense_level=OffenseLevel.FELONY,
+        disposition=Disposition.CONVICTED,
+        arrest_date=None, disposition_date=date(2020, 1, 1),
+        state="UT", county="",
+        record_first_name="", record_last_name="",
+    )
+    record = edit_record_widget(default_record, idx=0)
+
+    st.subheader("🏢 Client restrictions (optional)")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        client_name = st.text_input("Client name")
+    with c2:
+        client_max_misd = st.number_input(
+            "Misd cap (yrs)", min_value=0, max_value=30, value=0,
+            help="0 = FCRA/state default",
+        )
+    with c3:
+        client_max_fel = st.number_input(
+            "Felony cap (yrs)", min_value=0, max_value=30, value=0,
+            help="0 = FCRA/state default",
+        )
+    with c4:
+        felonies_only = st.checkbox("Felonies only")
+
+    client = None
+    if client_name or client_max_misd or client_max_fel or felonies_only:
+        client = ClientProfile(
+            client_id=(client_name or "custom").replace(" ", "_")[:32],
+            client_name=client_name,
+            max_years_misdemeanor=client_max_misd or None,
+            max_years_felony=client_max_fel or None,
+            felonies_only=felonies_only,
+        )
+
+    if st.button("⚖️ Analyze", type="primary", use_container_width=True):
+        if not subject.first_name or not subject.last_name:
+            st.error("Please enter the candidate's first and last name.")
+            return
+        d = analyze_record(record, subject, client)
+        st.markdown("---")
+        render_decision(d, record, subject)
+
+        st.download_button(
+            "⬇️ Download decision as JSON",
+            data=json.dumps(d.to_dict(), indent=2),
+            file_name=f"decision_{record.record_id or 'manual'}.json",
+            mime="application/json",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Page: State rules
+# ---------------------------------------------------------------------------
 
 
 def page_state_rules():
@@ -720,12 +790,18 @@ def page_state_rules():
         rule = get_state_rule(code)
         with st.expander(f"**{code}** — {rule.sop_reference}"):
             cols = st.columns(4)
-            cols[0].metric("Conviction cap", f"{rule.conviction_max_years or '—'}y")
+            cols[0].metric(
+                "Conviction cap",
+                f"{rule.conviction_max_years}y" if rule.conviction_max_years else "—",
+            )
             cols[1].metric(
                 "Misd cap",
-                f"{rule.misdemeanor_max_years or '(same)'}",
+                f"{rule.misdemeanor_max_years}y" if rule.misdemeanor_max_years else "(same)",
             )
-            cols[2].metric("Pending cap", f"{rule.pending_max_years or '—'}y")
+            cols[2].metric(
+                "Pending cap",
+                f"{rule.pending_max_years}y" if rule.pending_max_years else "—",
+            )
             cols[3].metric(
                 "Salary cap",
                 f"${rule.salary_cap:,.0f}" if rule.salary_cap else "—",
@@ -737,21 +813,120 @@ def page_state_rules():
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Page: About
 # ---------------------------------------------------------------------------
+
+
+def page_about():
+    st.title("📖 About the QA Analyzer")
+    st.markdown(
+        """
+        Automates the reportability decision a VICTIG QA researcher makes
+        on every criminal record: pass the record through Kate's SOP
+        (FCRA + state law + client restrictions + matching policy) and
+        return REPORT / EXCLUDE / ESCALATE with a full audit trail.
+
+        ### How it works
+
+        1. **Paste** raw candidate + record data (any format).
+        2. The **parser** (Claude) extracts structured JSON.
+        3. You **review & edit** the extracted fields.
+        4. The **deterministic engine** applies:
+           - SOP §5 — 4 core tests (offense/scope/disposition/PII)
+           - SOP §6 — controlling-date calculation
+           - SOP §7 — 19 states with special rules
+           - SOP §8 — Matching Policy Levels 1/2/3
+           - SOP §18 — reporting guidelines (Ban-the-Box, salary caps)
+        5. Get a per-record verdict with **SOP citations** for every rule.
+
+        The LLM only does PARSING (variability). All judgment is
+        deterministic — auditable for FCRA compliance review.
+
+        ### Precedence rule
+
+        1. Any hard-fail → **EXCLUDE**
+        2. Any escalate flag → **ESCALATE**
+        3. All pass → **REPORT**
+
+        ### Configuration
+
+        - `ANTHROPIC_API_KEY` in Streamlit Secrets — required for the
+          paste parser. Not needed for Manual entry mode.
+
+        ### Repo & source
+
+        - GitHub: https://github.com/lamangamatt/victig-qa-analyzer
+        - SOP: Kate Florez's QA SOP (referenced throughout)
+        """
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sidebar & main
+# ---------------------------------------------------------------------------
+
+
+def sidebar():
+    st.sidebar.title("⚖️ QA Analyzer")
+    st.sidebar.caption("VICTIG SOP-driven reportability engine")
+
+    page = st.sidebar.radio(
+        "Navigation",
+        options=[
+            "📋 Paste & analyze",
+            "📝 Manual entry",
+            "📁 State rules",
+            "📖 About",
+        ],
+        label_visibility="collapsed",
+    )
+    st.sidebar.divider()
+
+    with st.sidebar:
+        parser_ok = parser.is_available()
+        st.markdown(
+            f"**Parser:** {'🟢 Enabled' if parser_ok else '⚪ Disabled (no API key)'}"
+        )
+        st.divider()
+        st.markdown("### Outcomes")
+        st.markdown(
+            """
+            - <span style='color:#198754;font-weight:600'>REPORT</span>
+              — all 4 tests pass
+            - <span style='color:#dc3545;font-weight:600'>EXCLUDE</span>
+              — one or more tests definitively fail
+            - <span style='color:#ffc107;font-weight:600'>ESCALATE</span>
+              — needs human review
+            """,
+            unsafe_allow_html=True,
+        )
+        st.divider()
+        st.markdown("### The 4 SOP tests")
+        st.markdown(
+            """
+            1. **Reportable offense** (felony/misdemeanor)
+            2. **Within scope** (FCRA + state + client caps)
+            3. **Reportable disposition** (conviction or active pending)
+            4. **Sufficient PII** (2 IDs, or 3 if common name)
+            """
+        )
+
+    return page
 
 
 def main():
     page = sidebar()
-    if page.startswith("🔍"):
-        page_analyze()
-    elif page.startswith("📖"):
-        page_about()
-    else:
+    if page.startswith("📋"):
+        page_paste()
+    elif page.startswith("📝"):
+        page_manual()
+    elif page.startswith("📁"):
         page_state_rules()
+    else:
+        page_about()
 
     st.markdown(
-        "<div class='footer-note'>VICTIG QA Analyzer v0.1 · "
+        "<div class='footer-note'>VICTIG QA Analyzer v0.2 · "
         "SOP source: Kate Florez · "
         "Built for FCRA-compliant reportability review</div>",
         unsafe_allow_html=True,
