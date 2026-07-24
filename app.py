@@ -248,20 +248,36 @@ def render_rule_result(r):
     )
 
 
+def _mask_name(subject: Subject) -> str:
+    """Compact identifier for the result card. First name + last initial
+    keeps records distinguishable during batch review without splashing
+    the full PII across every card."""
+    first = (subject.first_name or "").strip()
+    last = (subject.last_name or "").strip()
+    if first and last:
+        return f"{first} {last[0].upper()}."
+    return first or last or "(candidate)"
+
+
+def _mask_dob(subject: Subject) -> str:
+    """Show birth year only — enough context to distinguish records
+    without exposing the exact date."""
+    if subject.dob:
+        return f"Born {subject.dob.year}"
+    return ""
+
+
 def render_decision(decision: Decision, record: CriminalRecord, subject: Subject):
     render_outcome(decision.outcome, record.record_id or "record")
     st.write("")
 
     col_a, col_b, col_c = st.columns(3)
     with col_a:
-        st.markdown("**Subject**")
-        parts = [subject.first_name]
-        if subject.middle_name:
-            parts.append(subject.middle_name)
-        parts.append(subject.last_name)
-        st.text(" ".join(parts))
-        if subject.dob:
-            st.text(f"DOB: {subject.dob.isoformat()}")
+        st.markdown("**Candidate**")
+        st.text(_mask_name(subject))
+        dob_line = _mask_dob(subject)
+        if dob_line:
+            st.text(dob_line)
     with col_b:
         st.markdown("**Charge**")
         st.text(record.charge_description or "(unspecified)")
@@ -733,7 +749,9 @@ def page_paste():
                 with st.expander(title, expanded=False):
                     render_decision(d, rec, subject)
 
-        # Downloadable JSON audit trail
+        # Downloadable JSON audit trail (contains full PII — for compliance
+        # records only; filename uses masked identifier to avoid PII in
+        # the operator's Downloads folder)
         st.markdown("---")
         audit = {
             "subject": {
@@ -743,11 +761,20 @@ def page_paste():
             "decisions": [d.to_dict() for _, d in results],
             "counts": counts,
         }
+        # Masked identifier for the filename: initials + last 2 of year
+        initials = "".join(
+            n[:1].upper() for n in (subject.first_name, subject.last_name) if n
+        ) or "XX"
+        year_tail = str(subject.dob.year)[-2:] if subject.dob else "XX"
+        fname_id = f"{initials}{year_tail}"
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
         st.download_button(
             "⬇️ Download audit trail (JSON)",
             data=json.dumps(audit, indent=2),
-            file_name=f"qa_audit_{subject.first_name}_{subject.last_name}.json",
+            file_name=f"qa_audit_{fname_id}_{stamp}.json",
             mime="application/json",
+            help="Contains full PII — store per your data-retention policy.",
         )
 
 
