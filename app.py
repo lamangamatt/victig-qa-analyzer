@@ -23,7 +23,7 @@ sys.path.insert(0, str(_ROOT / "src"))
 
 import streamlit as st  # noqa: E402
 
-from qa_analyzer import parser  # noqa: E402
+from qa_analyzer import audit, parser  # noqa: E402
 from qa_analyzer.decision import analyze_record  # noqa: E402
 from qa_analyzer.models import (  # noqa: E402
     ClientProfile,
@@ -675,7 +675,8 @@ def page_paste():
         st.session_state["parsed"] = None
         st.session_state["parse_error"] = None
         try:
-            with st.spinner("Extracting structured data…"):
+            with st.spinner("Redacting PII → sending to Claude → parsing…"):
+                # redact=True by default — PII is stripped before send.
                 parsed = parser.parse(text)
             st.session_state["parsed"] = parsed
         except parser.ParserError as e:
@@ -706,6 +707,23 @@ def page_paste():
                 "operator review needed — this paste is likely incomplete."),
     }
     conf_cls, conf_icon, conf_rubric = conf_meta.get(conf, conf_meta["medium"])
+
+    # PII protection status + confidence in one row
+    pii_stats = parsed.get("pii_stats") or {}
+    pii_total = sum(pii_stats.values())
+    if pii_total > 0:
+        stat_bits = ", ".join(f"{n} {k}" for k, n in sorted(pii_stats.items()))
+        pii_line = (
+            f"🛡️ **PII shield ON** — {pii_total} items pseudonymized before "
+            f"leaving this machine ({stat_bits})"
+        )
+    else:
+        pii_line = (
+            "🛡️ **PII shield ON** — no identifiable fields detected in "
+            "the input"
+        )
+    st.success(pii_line, icon=None)
+
     st.markdown(
         f"**Parse confidence:** <span class='{conf_cls}'>{conf_icon} "
         f"{conf.upper()}</span>",
@@ -966,6 +984,85 @@ def page_state_rules():
 
 
 # ---------------------------------------------------------------------------
+# Page: Audit log
+# ---------------------------------------------------------------------------
+
+
+def page_audit():
+    st.title("📜 Audit log")
+    st.caption(
+        "Local record of every parse call. No PII is stored — just "
+        "redaction counts, hashes, and timing."
+    )
+
+    try:
+        log = audit.default_log()
+        summary = log.summary()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Audit log unavailable: {e}")
+        return
+
+    # Summary cards
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Total parses", summary["total_events"])
+    with c2:
+        st.metric("Successful", summary["ok_events"])
+    with c3:
+        st.metric("Errors", summary["error_events"])
+    with c4:
+        st.metric("Avg latency", f"{summary['avg_latency_ms']:.0f} ms")
+
+    st.caption(
+        f"DB: `{summary['db_path']}` · "
+        f"{summary['db_size_bytes'] / 1024:.1f} KB · "
+        f"First event: {summary['first_event_utc'] or '—'} · "
+        f"Last event: {summary['last_event_utc'] or '—'}"
+    )
+
+    st.markdown("---")
+    st.subheader("Recent events")
+    events = log.recent(limit=50)
+    if not events:
+        st.info("No events recorded yet.")
+        return
+
+    # Compact table with expanders for detail
+    for e in events:
+        stats = e.get("redaction_stats") or {}
+        pii_summary = ", ".join(f"{n}{k[0]}" for k, n in sorted(stats.items())) or "—"
+        status_icon = "✅" if e["status"] == "ok" else "❌"
+        title = (
+            f"{status_icon} #{e['id']}  ·  {e['ts_utc']}  ·  "
+            f"{e['latency_ms']} ms  ·  "
+            f"PII: {pii_summary}"
+        )
+        with st.expander(title, expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown(f"**Model:** {e['model']}")
+                st.markdown(
+                    f"**Tokens:** in={e['tokens_in']} out={e['tokens_out']}"
+                )
+                st.markdown(
+                    f"**Confidence:** {e.get('parse_confidence') or '—'}"
+                )
+                st.markdown(f"**Records extracted:** {e.get('record_count') or 0}")
+            with c2:
+                st.markdown(
+                    f"**Input bytes:** {e['input_bytes']} → "
+                    f"redacted **{e['redacted_bytes']}**"
+                )
+                st.markdown(f"**Request hash:**")
+                st.code(e["request_hash"], language=None)
+                if e.get("error_message"):
+                    st.error(e["error_message"])
+            if stats:
+                st.markdown("**Redaction breakdown:**")
+                st.json(stats)
+
+
+# ---------------------------------------------------------------------------
 # Page: About
 # ---------------------------------------------------------------------------
 
@@ -982,18 +1079,40 @@ def page_about():
         ### How it works
 
         1. **Paste** raw candidate + record data (any format).
-        2. The **parser** (Claude) extracts structured JSON.
-        3. You **review & edit** the extracted fields.
-        4. The **deterministic engine** applies:
+        2. **PII shield** — names / DOB / SSN / addresses / phones /
+           emails / case numbers are stripped from the paste before it
+           leaves this machine. They're replaced with realistic
+           pseudonyms ("John Smith" → "Aria Ashford") so Claude sees
+           a structurally intact but personally anonymous record.
+        3. The **parser** (Claude) extracts structured JSON from the
+           pseudonymized paste.
+        4. **Local reinjection** — the real PII values are substituted
+           back into the JSON on this machine only.
+        5. You **review & edit** the extracted fields.
+        6. The **deterministic engine** applies:
            - SOP §5 — 4 core tests (offense/scope/disposition/PII)
            - SOP §6 — controlling-date calculation
            - SOP §7 — 19 states with special rules
            - SOP §8 — Matching Policy Levels 1/2/3
            - SOP §18 — reporting guidelines (Ban-the-Box, salary caps)
-        5. Get a per-record verdict with **SOP citations** for every rule.
+        7. Get a per-record verdict with **SOP citations** for every rule.
 
         The LLM only does PARSING (variability). All judgment is
         deterministic — auditable for FCRA compliance review.
+
+        ### PII protection guarantees
+
+        - **What Claude sees:** structural data (charges, dispositions,
+          dates, jurisdictions, court names) with all identifiers
+          replaced by realistic pseudonyms.
+        - **What Claude never sees:** real names, DOBs, SSNs, street
+          addresses, phone numbers, emails, or case numbers.
+        - **What's logged locally:** timestamp, request hash, redaction
+          counts, tokens, latency — no PII, no request text, no
+          response text.
+        - **Anthropic-side retention:** default 30 days for safety
+          review. Even if a request is inspected there, it contains no
+          personally identifying information about the candidate.
 
         ### Precedence rule
 
@@ -1003,8 +1122,11 @@ def page_about():
 
         ### Configuration
 
-        - `ANTHROPIC_API_KEY` in Streamlit Secrets — required for the
+        - `ANTHROPIC_API_KEY` in `~/.qa-analyzer.env` — required for the
           paste parser. Not needed for Manual entry mode.
+        - `QA_ANALYZER_TOKEN` in `~/.qa-analyzer.env` — shared access
+          token gating the app.
+        - Audit DB at `~/.qa-analyzer-audit.db` (SQLite, chmod 600).
 
         ### Repo & source
 
@@ -1029,6 +1151,7 @@ def sidebar():
             "📋 Paste & analyze",
             "📝 Manual entry",
             "📁 State rules",
+            "📜 Audit log",
             "📖 About",
         ],
         label_visibility="collapsed",
@@ -1040,6 +1163,7 @@ def sidebar():
         st.markdown(
             f"**Parser:** {'🟢 Enabled' if parser_ok else '⚪ Disabled (no API key)'}"
         )
+        st.markdown("**PII shield:** 🛡️ On")
         st.divider()
         st.markdown("### Outcomes")
         st.markdown(
@@ -1075,12 +1199,15 @@ def main():
         page_manual()
     elif page.startswith("📁"):
         page_state_rules()
+    elif page.startswith("📜"):
+        page_audit()
     else:
         page_about()
 
     st.markdown(
-        "<div class='footer-note'>VICTIG QA Analyzer v0.2 · "
+        "<div class='footer-note'>VICTIG QA Analyzer v0.3 · "
         "SOP source: Kate Florez · "
+        "PII shield ON · "
         "Built for FCRA-compliant reportability review</div>",
         unsafe_allow_html=True,
     )

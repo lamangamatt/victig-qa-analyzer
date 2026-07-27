@@ -6,8 +6,15 @@ structure that matches our engine's schema. The extracted data is
 displayed for human verification BEFORE the deterministic analyzer
 runs, so the LLM only handles PARSING (variability), never JUDGMENT.
 
-Uses Anthropic Claude. Reads ANTHROPIC_API_KEY from env (Streamlit
-Cloud sets this from Streamlit Secrets).
+Data-protection layer (v0.3+): before sending the paste to Claude, we
+run `redaction.redact()` to swap all PII (names, DOB, SSN, addresses,
+phone/email, case numbers) for realistic-looking pseudonyms. Claude
+parses the pseudonymized paste; then we substitute the real values
+back into the returned JSON locally. Every call is logged to a local
+SQLite audit table (no PII in the log). Set redact=False only for
+unit tests or synthetic-data validation.
+
+Uses Anthropic Claude. Reads ANTHROPIC_API_KEY from env.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from dataclasses import asdict
 from datetime import date
 from typing import Optional
 
+from qa_analyzer import audit, redaction
 from qa_analyzer.models import (
     CriminalRecord,
     Disposition,
@@ -38,6 +46,16 @@ DEFAULT_MODEL = "claude-haiku-4-5"
 # ---------------------------------------------------------------------------
 
 SCHEMA_PROMPT = """You extract structured criminal-record data from operator-pasted text.
+
+PRIVACY NOTE: The paste you receive may have been PSEUDONYMIZED before
+you see it — identifiers like names, dates of birth, SSNs, addresses,
+phones, emails, and case numbers may be replaced with realistic-
+looking placeholders such as "Aria Ashford", "1900-01-01",
+"XXX-XX-0001", "555-000-0001", or "CASE-000001". These substitutions
+are intentional privacy controls on our side. Do NOT flag them as
+suspicious, placeholder, test data, or missing. Treat them as normal
+data and extract them exactly as they appear. The real values will be
+restored downstream after your response.
 
 Output STRICT JSON matching this schema (no prose, no markdown):
 
@@ -186,19 +204,37 @@ def is_available() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
+def parse(
+    text: str,
+    model: str = DEFAULT_MODEL,
+    redact: bool = True,
+    log: bool = True,
+) -> dict:
     """Extract structured data from pasted text.
 
-    Returns a dict with keys: subject, records, client, notes, confidence.
-    Raises ParserError on failure with a user-friendly message.
+    Args:
+        text: raw paste from the operator.
+        model: Claude model name (default Haiku).
+        redact: if True (default), strip PII before sending to Claude
+            and substitute back locally. Set False only for unit tests
+            or when running against synthetic data.
+        log: if True (default), record the call in the local audit
+            SQLite table.
+
+    Returns:
+        Dict with keys: subject, records, client, notes, confidence,
+        confidence_reason, and (when redact=True) pii_stats.
+
+    Raises:
+        ParserError on failure with a user-friendly message.
     """
     if not text.strip():
         raise ParserError("Empty input. Paste some data and try again.")
 
     if not is_available():
         raise ParserUnavailable(
-            "Parser needs ANTHROPIC_API_KEY. Add it in Streamlit Cloud "
-            "app settings → Secrets, then reboot the app."
+            "Parser needs ANTHROPIC_API_KEY. Set it in the environment "
+            "(dev) or ~/.qa-analyzer.env (Mac mini deployment)."
         )
 
     try:
@@ -208,6 +244,12 @@ def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
             "The 'anthropic' package is not installed. Add it to "
             "requirements.txt and redeploy."
         )
+
+    # --- Redact PII before send -----------------------------------------
+    if redact:
+        redacted_text, pii_map = redaction.redact(text)
+    else:
+        redacted_text, pii_map = text, redaction.PIIMap()
 
     client = anthropic.Anthropic()
 
@@ -230,18 +272,41 @@ def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
         },
     }
 
+    timer = audit.Timer()
+    log_event = None
+    tokens_in = None
+    tokens_out = None
+
     try:
-        response = client.messages.create(
-            model=model,
-            max_tokens=8192,
-            temperature=0,
-            system=SCHEMA_PROMPT,
-            tools=[tool],
-            tool_choice={"type": "tool", "name": "emit_parsed_case"},
-            messages=[{"role": "user", "content": text}],
-        )
+        with timer:
+            response = client.messages.create(
+                model=model,
+                max_tokens=8192,
+                temperature=0,
+                system=SCHEMA_PROMPT,
+                tools=[tool],
+                tool_choice={"type": "tool", "name": "emit_parsed_case"},
+                messages=[{"role": "user", "content": redacted_text}],
+            )
     except Exception as e:
+        # Log the failure before raising
+        if log:
+            _log_safe(audit.ParseEvent(
+                input_text=text,
+                redacted_text=redacted_text,
+                redaction_stats=pii_map.stats(),
+                model=model,
+                latency_ms=getattr(timer, "elapsed_ms", 0),
+                status="error",
+                error_message=f"{type(e).__name__}: {e}",
+            ))
         raise ParserError(f"LLM call failed: {type(e).__name__}: {e}") from e
+
+    try:
+        tokens_in = response.usage.input_tokens
+        tokens_out = response.usage.output_tokens
+    except AttributeError:
+        pass
 
     if not response.content:
         raise ParserError("LLM returned empty response.")
@@ -296,7 +361,36 @@ def parse(text: str, model: str = DEFAULT_MODEL) -> dict:
     parsed.setdefault("confidence", "medium")
     parsed.setdefault("confidence_reason", "")
     parsed.setdefault("client", None)
+
+    # --- Substitute real values back in ---------------------------------
+    if redact:
+        parsed = pii_map.substitute_parsed(parsed)
+        parsed["pii_stats"] = pii_map.stats()
+
+    # --- Audit log (success path) ---------------------------------------
+    if log:
+        _log_safe(audit.ParseEvent(
+            input_text=text,
+            redacted_text=redacted_text,
+            redaction_stats=pii_map.stats(),
+            model=model,
+            latency_ms=timer.elapsed_ms,
+            status="ok",
+            tokens_in=tokens_in,
+            tokens_out=tokens_out,
+            parse_confidence=parsed.get("confidence"),
+            record_count=len(parsed.get("records") or []),
+        ))
+
     return parsed
+
+
+def _log_safe(event: audit.ParseEvent) -> None:
+    """Write to audit log; never let a logging failure break the parse."""
+    try:
+        audit.default_log().log(event)
+    except Exception:  # noqa: BLE001 — audit failure should never surface
+        pass
 
 
 # ---------------------------------------------------------------------------
