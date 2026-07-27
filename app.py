@@ -747,131 +747,153 @@ def page_paste():
     if notes:
         st.info("📝 Parser notes:\n\n" + "\n".join(f"- {n}" for n in notes))
 
-    # Review + edit
-    st.markdown("---")
-    st.subheader("👤 Candidate (review & edit)")
+    # Extract parsed models. Editable widgets live inside a single
+    # collapsed expander so the RESULTS show up right below the
+    # confidence / PII banner — no scrolling past a wall of correction
+    # fields for the common case where the parser got everything right.
     subject = parser.dict_to_subject(parsed.get("subject", {}))
-    subject = edit_subject_widget(subject)
-
-    st.subheader(f"📋 Records ({len(parsed.get('records', []))})")
     records_raw = parsed.get("records", [])
     if not records_raw:
         st.warning("No records extracted. Add or paste more data and try again.")
         return
 
-    records = []
-    for i, rd in enumerate(records_raw):
-        with st.expander(
-            f"Record {i+1}: {rd.get('charge_description', '(no charge)')}  "
-            f"[{rd.get('state', '?')}]",
-            expanded=False,
-        ):
+    st.markdown("---")
+    rec_word = "record" if len(records_raw) == 1 else "records"
+    with st.expander(
+        f"✏️ Review & edit extracted data  ·  1 candidate + "
+        f"{len(records_raw)} {rec_word}",
+        expanded=False,
+    ):
+        st.markdown("**👤 Candidate**")
+        subject = edit_subject_widget(subject)
+
+        records = []
+        for i, rd in enumerate(records_raw):
+            st.markdown("---")
+            st.markdown(
+                f"**📑 Record {i+1}: "
+                f"{rd.get('charge_description', '(no charge)')}  "
+                f"[{rd.get('state', '?')}]**"
+            )
             rec = parser.dict_to_record(rd)
             rec = edit_record_widget(rec, i)
             records.append(rec)
 
+    # Fallback in case the expander body didn't run (shouldn't happen
+    # in Streamlit, but guards against future refactors).
+    if "records" not in locals():
+        records = [parser.dict_to_record(rd) for rd in records_raw]
+
     # Client
     client = parser.dict_to_client(parsed.get("client"))
 
-    # Analyze
+    # Auto-analyze — runs on every rerun once we have parsed data.
+    # Any edit to the fields above triggers a Streamlit rerun, which
+    # re-invokes analyze_record with the updated values. No button click
+    # needed. This mirrors the reviewer's workflow: parse → glance at
+    # results → correct anything wrong → results update immediately.
     st.markdown("---")
-    if st.button("⚖️ Analyze all records", type="primary", use_container_width=True):
-        st.markdown("### Results")
+    st.markdown("### Results")
+    st.caption(
+        "Analysis runs automatically. If you edit any field above, "
+        "results below update on the next interaction."
+    )
 
-        # Run analysis
-        results = []
-        counts = {"REPORT": 0, "EXCLUDE": 0, "ESCALATE": 0}
-        for rec in records:
-            d = analyze_record(rec, subject, client, other_records_on_report=records)
-            results.append((rec, d))
-            counts[d.outcome.value] += 1
+    results = []
+    counts = {"REPORT": 0, "EXCLUDE": 0, "ESCALATE": 0}
+    for rec in records:
+        d = analyze_record(rec, subject, client, other_records_on_report=records)
+        results.append((rec, d))
+        counts[d.outcome.value] += 1
 
-        # Summary counters
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(
-                f"<div class='summary-metric'>"
-                f"<h2 style='color:#dc3545;margin:0'>{counts['EXCLUDE']}</h2>"
-                f"<div>EXCLUDE</div></div>",
-                unsafe_allow_html=True,
-            )
-        with c2:
-            st.markdown(
-                f"<div class='summary-metric'>"
-                f"<h2 style='color:#b58900;margin:0'>{counts['ESCALATE']}</h2>"
-                f"<div>ESCALATE</div></div>",
-                unsafe_allow_html=True,
-            )
-        with c3:
-            st.markdown(
-                f"<div class='summary-metric'>"
-                f"<h2 style='color:#198754;margin:0'>{counts['REPORT']}</h2>"
-                f"<div>REPORT</div></div>",
-                unsafe_allow_html=True,
-            )
-        st.write("")
-
-        # Group by outcome in order: EXCLUDE, ESCALATE, REPORT
-        outcome_order = [
-            DecisionOutcome.EXCLUDE,
-            DecisionOutcome.ESCALATE,
-            DecisionOutcome.REPORT,
-        ]
-        outcome_meta = {
-            DecisionOutcome.EXCLUDE: ("❌", "EXCLUDE", "#dc3545"),
-            DecisionOutcome.ESCALATE: ("⚠️", "ESCALATE", "#b58900"),
-            DecisionOutcome.REPORT: ("✅", "REPORT", "#198754"),
-        }
-
-        for outcome in outcome_order:
-            group = [(rec, d) for rec, d in results if d.outcome == outcome]
-            if not group:
-                continue
-
-            icon, label, color = outcome_meta[outcome]
-            st.markdown(
-                f"<h4 style='color:{color};margin-top:20px;margin-bottom:8px'>"
-                f"{icon} {label} · {len(group)}</h4>",
-                unsafe_allow_html=True,
-            )
-
-            for rec, d in group:
-                # Compact expander title so the outcome is scannable
-                charge = rec.charge_description or "(no charge)"
-                title = (
-                    f"{icon} {label}  ·  {rec.record_id or 'record'}  ·  "
-                    f"{charge} [{rec.state or '?'}]"
-                )
-                with st.expander(title, expanded=False):
-                    render_decision(d, rec, subject)
-
-        # Downloadable JSON audit trail (contains full PII — for compliance
-        # records only; filename uses masked identifier to avoid PII in
-        # the operator's Downloads folder)
-        st.markdown("---")
-        audit = {
-            "subject": {
-                "name": f"{subject.first_name} {subject.last_name}",
-                "dob": subject.dob.isoformat() if subject.dob else None,
-            },
-            "decisions": [d.to_dict() for _, d in results],
-            "counts": counts,
-        }
-        # Masked identifier for the filename: initials + last 2 of year
-        initials = "".join(
-            n[:1].upper() for n in (subject.first_name, subject.last_name) if n
-        ) or "XX"
-        year_tail = str(subject.dob.year)[-2:] if subject.dob else "XX"
-        fname_id = f"{initials}{year_tail}"
-        from datetime import datetime
-        stamp = datetime.now().strftime("%Y%m%d_%H%M")
-        st.download_button(
-            "⬇️ Download audit trail (JSON)",
-            data=json.dumps(audit, indent=2),
-            file_name=f"qa_audit_{fname_id}_{stamp}.json",
-            mime="application/json",
-            help="Contains full PII — store per your data-retention policy.",
+    # Summary counters
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(
+            f"<div class='summary-metric'>"
+            f"<h2 style='color:#dc3545;margin:0'>{counts['EXCLUDE']}</h2>"
+            f"<div>EXCLUDE</div></div>",
+            unsafe_allow_html=True,
         )
+    with c2:
+        st.markdown(
+            f"<div class='summary-metric'>"
+            f"<h2 style='color:#b58900;margin:0'>{counts['ESCALATE']}</h2>"
+            f"<div>ESCALATE</div></div>",
+            unsafe_allow_html=True,
+        )
+    with c3:
+        st.markdown(
+            f"<div class='summary-metric'>"
+            f"<h2 style='color:#198754;margin:0'>{counts['REPORT']}</h2>"
+            f"<div>REPORT</div></div>",
+            unsafe_allow_html=True,
+        )
+    st.write("")
+
+    # Group by outcome in order: EXCLUDE, ESCALATE, REPORT
+    outcome_order = [
+        DecisionOutcome.EXCLUDE,
+        DecisionOutcome.ESCALATE,
+        DecisionOutcome.REPORT,
+    ]
+    outcome_meta = {
+        DecisionOutcome.EXCLUDE: ("❌", "EXCLUDE", "#dc3545"),
+        DecisionOutcome.ESCALATE: ("⚠️", "ESCALATE", "#b58900"),
+        DecisionOutcome.REPORT: ("✅", "REPORT", "#198754"),
+    }
+
+    for outcome in outcome_order:
+        group = [(rec, d) for rec, d in results if d.outcome == outcome]
+        if not group:
+            continue
+
+        icon, label, color = outcome_meta[outcome]
+        st.markdown(
+            f"<h4 style='color:{color};margin-top:20px;margin-bottom:8px'>"
+            f"{icon} {label} · {len(group)}</h4>",
+            unsafe_allow_html=True,
+        )
+
+        # For single-outcome situations, expand automatically so the
+        # operator doesn't have to click to see the reasoning.
+        auto_expand = (len(group) == 1 and len(records) == 1)
+
+        for rec, d in group:
+            charge = rec.charge_description or "(no charge)"
+            title = (
+                f"{icon} {label}  ·  {rec.record_id or 'record'}  ·  "
+                f"{charge} [{rec.state or '?'}]"
+            )
+            with st.expander(title, expanded=auto_expand):
+                render_decision(d, rec, subject)
+
+    # Downloadable JSON audit trail (contains full PII — for compliance
+    # records only; filename uses masked identifier to avoid PII in
+    # the operator's Downloads folder)
+    st.markdown("---")
+    audit_payload = {
+        "subject": {
+            "name": f"{subject.first_name} {subject.last_name}",
+            "dob": subject.dob.isoformat() if subject.dob else None,
+        },
+        "decisions": [d.to_dict() for _, d in results],
+        "counts": counts,
+    }
+    initials = "".join(
+        n[:1].upper() for n in (subject.first_name, subject.last_name) if n
+    ) or "XX"
+    year_tail = str(subject.dob.year)[-2:] if subject.dob else "XX"
+    fname_id = f"{initials}{year_tail}"
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    st.download_button(
+        "⬇️ Download audit trail (JSON)",
+        data=json.dumps(audit_payload, indent=2),
+        file_name=f"qa_audit_{fname_id}_{stamp}.json",
+        mime="application/json",
+        help="Contains full PII — store per your data-retention policy.",
+    )
 
 
 # ---------------------------------------------------------------------------
