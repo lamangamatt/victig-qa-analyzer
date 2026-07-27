@@ -4,7 +4,11 @@ Automated criminal-record reportability engine that applies VICTIG's SOP
 (FCRA + state law + client restrictions + matching policy) to determine
 whether a record can be reported, must be excluded, or needs human review.
 
-**Status:** v0.1 — rules engine, state law table, matching policy, Streamlit UI, 52 unit tests all passing.
+**Status:** v0.3 — rules engine, state law table, matching policy, Streamlit UI, PII shield + local audit log, 85 unit tests all passing.
+
+For a shareable description of what the tool does and how data is
+handled (suitable for QA staff, legal review, or client compliance
+questions), see [`docs/OVERVIEW.md`](docs/OVERVIEW.md).
 
 ## Quick start (local)
 
