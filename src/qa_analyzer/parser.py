@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict
 from datetime import date
 from typing import Optional
@@ -33,6 +34,13 @@ from qa_analyzer.models import (
     OffenseLevel,
     Subject,
 )
+
+
+# Max output tokens per LLM call. 16384 is the effective cap for Haiku
+# 4.5 without streaming (32K+ requires the streaming API). Empirically
+# this fits ~25-30 records worth of structured JSON output; beyond that,
+# we auto-chunk the paste by record boundary.
+MAX_TOKENS_PER_CALL = 16384
 
 
 # Claude Haiku 4.5 is 3-5x faster and ~10x cheaper than Sonnet, with
@@ -281,7 +289,7 @@ def parse(
         with timer:
             response = client.messages.create(
                 model=model,
-                max_tokens=8192,
+                max_tokens=MAX_TOKENS_PER_CALL,
                 temperature=0,
                 system=SCHEMA_PROMPT,
                 tools=[tool],
@@ -344,12 +352,28 @@ def parse(
         # tool_use returns parsed dict directly — no JSON decode step needed
         parsed = tool_use_block.input
 
-    # Check for truncation via stop_reason
+    # Check for truncation via stop_reason. If we hit max_tokens even at
+    # our high per-call limit, fall back to auto-chunking the paste by
+    # record boundary and parsing each chunk separately.
     if getattr(response, "stop_reason", None) == "max_tokens":
-        raise ParserError(
-            "Response was truncated (hit max_tokens). Try splitting your "
-            "paste into fewer records at a time."
-        )
+        chunks = _split_by_record_boundary(redacted_text)
+        if len(chunks) > 1:
+            merged = _parse_and_merge_chunks(
+                chunks, client, tool, model, timer,
+            )
+            parsed = merged
+            # Re-derive token counts from merged.
+            try:
+                tokens_in = None  # sum tracked inside merge helper if desired
+                tokens_out = None
+            except AttributeError:
+                pass
+        else:
+            raise ParserError(
+                "Response was truncated (hit max_tokens) and the paste "
+                "could not be automatically split into smaller chunks. "
+                "Try splitting your paste by record and re-running."
+            )
 
     # Basic schema sanity
     if "subject" not in parsed:
@@ -391,6 +415,152 @@ def _log_safe(event: audit.ParseEvent) -> None:
         audit.default_log().log(event)
     except Exception:  # noqa: BLE001 — audit failure should never surface
         pass
+
+
+# ---------------------------------------------------------------------------
+# Auto-chunking (fallback when a single call hits max_tokens)
+# ---------------------------------------------------------------------------
+
+# Regex candidates for detecting where a new criminal record starts.
+# Ranked from STRONGEST (highest confidence per-hit is a real record
+# boundary) to WEAKEST (more likely to false-fire). We pick the
+# strongest pattern that has ≥2 hits in the text and use ONLY that.
+_RECORD_HEADER_PATTERNS = [
+    # Numbered records: "Record 1:", "Record #2", "RECORD 3"
+    re.compile(r"^\s*(?:RECORD|Record)\s*[#\d]", re.MULTILINE),
+    # Numbered cases: "Case 1:", "CASE #2:", "CASE 3"
+    re.compile(r"^\s*(?:CASE|Case)\s+[#\d]", re.MULTILINE),
+    # Header lines like "CRIMINAL RECORD #1" or "CRIMINAL RECORD:"
+    re.compile(r"^\s*CRIMINAL\s+RECORD\b", re.MULTILINE),
+    # Case number labels — weakest: assumes exactly one per record
+    re.compile(
+        r"^\s*(?:Case\s+Number|Case\s+No\.?|Docket(?:\s+No\.?|\s+#)?)\s*[:\-]",
+        re.MULTILINE | re.IGNORECASE,
+    ),
+]
+
+
+def _split_by_record_boundary(text: str) -> list[str]:
+    """Split a paste into (candidate + one_record) chunks.
+
+    Returns a list of chunk strings, each of which includes the
+    candidate header (so every chunk is a self-contained parseable
+    unit). If no reliable record boundaries can be found, returns
+    a single-element list containing the whole text.
+
+    Algorithm:
+        1. Try each pattern in order of strength.
+        2. First pattern with ≥2 hits wins — use ONLY that pattern's
+           positions as record boundaries.
+        3. Everything before the first boundary = candidate header,
+           prepended to every chunk.
+    """
+    if not text or not text.strip():
+        return [text]
+
+    starts: list[int] = []
+    for pat in _RECORD_HEADER_PATTERNS:
+        hits = [m.start() for m in pat.finditer(text)]
+        if len(hits) >= 2:
+            starts = sorted(hits)
+            break
+
+    if len(starts) < 2:
+        return [text]
+
+    first_start = starts[0]
+    if first_start == 0:
+        # No candidate header. Chunks are the record segments as-is.
+        header = ""
+    else:
+        header = text[:first_start]
+
+    starts.append(len(text))
+    chunks: list[str] = []
+    for i in range(len(starts) - 1):
+        piece = text[starts[i]:starts[i + 1]].rstrip() + "\n"
+        chunks.append((header + piece) if header else piece)
+
+    return chunks
+
+
+def _parse_and_merge_chunks(
+    chunks: list[str],
+    client,
+    tool: dict,
+    model: str,
+    timer,
+) -> dict:
+    """Parse each chunk separately and merge into a single result.
+
+    Merging strategy:
+        - subject / client: take from the first chunk that has them.
+        - records: concatenate across chunks (preserving order).
+        - notes: union across chunks + a note about auto-chunking.
+        - confidence: worst-case across chunks.
+    """
+    all_parsed: list[dict] = []
+    for chunk in chunks:
+        response = client.messages.create(
+            model=model,
+            max_tokens=MAX_TOKENS_PER_CALL,
+            temperature=0,
+            system=SCHEMA_PROMPT,
+            tools=[tool],
+            tool_choice={"type": "tool", "name": "emit_parsed_case"},
+            messages=[{"role": "user", "content": chunk}],
+        )
+        # Extract tool_use
+        tool_block = None
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use":
+                tool_block = block
+                break
+        if tool_block is None:
+            raise ParserError(
+                "Auto-chunk parse failed to return structured data. "
+                "Try splitting the paste manually into fewer records."
+            )
+        p = dict(tool_block.input)
+        if getattr(response, "stop_reason", None) == "max_tokens":
+            raise ParserError(
+                "A single record in your paste is too large to parse "
+                "(hit max_tokens even after auto-chunking). Try trimming "
+                "very long charge descriptions or supplemental narratives."
+            )
+        all_parsed.append(p)
+
+    # Merge
+    merged = {
+        "subject": {},
+        "records": [],
+        "client": None,
+        "notes": [f"Paste was auto-chunked into {len(chunks)} calls due to size."],
+        "confidence": "high",
+        "confidence_reason": "",
+    }
+    confidence_rank = {"high": 3, "medium": 2, "low": 1}
+    for p in all_parsed:
+        if p.get("subject") and not merged["subject"]:
+            merged["subject"] = p["subject"]
+        if p.get("client") and not merged["client"]:
+            merged["client"] = p["client"]
+        merged["records"].extend(p.get("records") or [])
+        for n in p.get("notes") or []:
+            if n not in merged["notes"]:
+                merged["notes"].append(n)
+        c = p.get("confidence") or "medium"
+        if confidence_rank.get(c, 2) < confidence_rank.get(merged["confidence"], 2):
+            merged["confidence"] = c
+            merged["confidence_reason"] = p.get("confidence_reason", "")
+
+    if not merged["confidence_reason"]:
+        merged["confidence_reason"] = (
+            f"Confidence rolled up as worst-case across {len(chunks)} "
+            "auto-chunked calls."
+        )
+
+    return merged
 
 
 # ---------------------------------------------------------------------------
